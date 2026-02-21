@@ -110,16 +110,57 @@ pub fn bind_shortcuts() {
 				{
 					for (_, value) in KEY_MAP.iter() {
 						if value.is_pressed() && !shortcut.contains(value) {
+							if *value == LShiftKey || *value == RShiftKey {
+								continue;
+							}
 							return inputbot::BlockInput::DontBlock;
 						}
 					}
-					switch_to_desktop(i, 0);
+					let moved_window = if should_move_active_window(&shortcut) {
+						active_window_for_move()
+					} else {
+						None
+					};
+					switch_to_desktop(i, 0, moved_window);
 					return inputbot::BlockInput::Block;
 				}
 				return inputbot::BlockInput::DontBlock;
 			});
 		}
 	}
+}
+
+fn should_move_active_window(shortcut: &[KeybdKey]) -> bool {
+	if !(LShiftKey.is_pressed() || RShiftKey.is_pressed()) {
+		return false;
+	}
+	if shortcut.contains(&LShiftKey) || shortcut.contains(&RShiftKey) {
+		return false;
+	}
+	return true;
+}
+
+fn active_window_for_move() -> Option<HWND> {
+	unsafe {
+		let hwnd = GetForegroundWindow();
+		if hwnd == HWND::default() || !is_normal_window(hwnd) {
+			return None;
+		}
+		return Some(hwnd);
+	}
+}
+
+fn focus_moved_window(window: HWND) -> bool {
+	for _ in 0..10 {
+		if matches!(winvd::is_window_on_current_desktop(window), Ok(true)) {
+			unsafe {
+				let _ = SetForegroundWindow(window);
+			}
+			return true;
+		}
+		thread::sleep(Duration::from_millis(40));
+	}
+	false
 }
 
 unsafe extern "system" fn enum_windows_and_switch_app_focus(
@@ -291,24 +332,32 @@ fn remove_tail_desktops_if_possible() {
 	}
 }
 
-fn switch_to_desktop(desktop: u32, tries: u8) {
+fn switch_to_desktop(desktop: u32, tries: u8, moved_window: Option<HWND>) {
 	if tries <= 10 {
 		match winvd::switch_desktop(desktop) {
 			Ok(_) => {
 				if let Ok(mut guard) = PRUNE_GRACE_DESKTOP.lock() {
 					*guard = Some((desktop, Instant::now()));
 				}
-				unsafe {
-					let _ = EnumWindows(
-						Some(enum_windows_and_switch_app_focus),
-						LPARAM { 0: 0 },
-					);
+				let moved_and_focused = moved_window.is_some_and(|window| {
+					if winvd::move_window_to_desktop(desktop, &window).is_ok() {
+						return focus_moved_window(window);
+					}
+					false
+				});
+				if !moved_and_focused {
+					unsafe {
+						let _ = EnumWindows(
+							Some(enum_windows_and_switch_app_focus),
+							LPARAM { 0: 0 },
+						);
+					}
 				}
 				remove_tail_desktops_if_possible();
 			}
 			Err(_) => match winvd::create_desktop() {
 				Ok(_) => {
-					switch_to_desktop(desktop, tries + 1);
+					switch_to_desktop(desktop, tries + 1, moved_window);
 				}
 				Err(e) => {
 					println!("Error: {:?}", e);
