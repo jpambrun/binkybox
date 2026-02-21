@@ -10,5 +10,6 @@ Use `just` targets for local workflow:
 - `just build`: build with `cargo build -r`.
 - `just run`: run `target\\release\\binkybox.exe` (depends on `kill`).
 - `just buildrun`: build then run, replacing any currently running version.
+- `just release`: build and publish `target\\release\\binkybox.exe` to `jpambrun/blinkybox` with a datetime-based title and tag.
 
 When code changes are complete, run `just buildrun`.
