@@ -3,16 +3,16 @@
 
 use inputbot::KeybdKey::{self, *};
 use json::JsonValue;
+use lazy_static::lazy_static;
 use regex::Regex;
 use std::collections::HashMap;
-use lazy_static::lazy_static;
+use std::sync::Mutex;
+use std::thread;
+use std::time::Duration;
+use std::time::Instant;
 
-use windows::{
-    Win32::{
-        Foundation::*,
-        UI::WindowsAndMessaging::*,
-        UI::Controls::STATE_SYSTEM_INVISIBLE,
-    },
+use windows::Win32::{
+	Foundation::*, UI::Controls::STATE_SYSTEM_INVISIBLE, UI::WindowsAndMessaging::*,
 };
 
 use std::ffi::OsString;
@@ -83,9 +83,10 @@ lazy_static! {
 		("9", Numrow9Key),
 		("0", Numrow0Key),
 	]
-	.iter() 
+	.iter()
 	.cloned()
 	.collect();
+	static ref PRUNE_GRACE_DESKTOP: Mutex<Option<(u32, Instant)>> = Mutex::new(None);
 }
 
 pub async fn init() {
@@ -98,7 +99,7 @@ pub fn bind_shortcuts() {
 	for (_, value) in KEY_MAP.iter() {
 		value.unbind();
 	}
-	for i in 0..8 {
+	for i in 0..9 {
 		let shortcut = process_shortcut(&my_config, i);
 		if let Some(key_to_bind) = shortcut.get(shortcut.len().saturating_sub(1)) {
 			key_to_bind.blockable_bind(move || {
@@ -121,66 +122,198 @@ pub fn bind_shortcuts() {
 	}
 }
 
-unsafe extern "system" fn enum_windows_and_switch_app_focus(hwnd: HWND, _lparam: LPARAM) -> BOOL {
-    // remove not visible windows
-    if IsWindowVisible(hwnd) == false {
-        return BOOL(1);
-    }
+unsafe extern "system" fn enum_windows_and_switch_app_focus(
+	hwnd: HWND,
+	_lparam: LPARAM,
+) -> BOOL {
+	if !is_normal_window(hwnd) {
+		return BOOL(1);
+	}
 
-    // remove windows with invisible title bar
-    let mut ti = TITLEBARINFO {
-        cbSize: std::mem::size_of::<TITLEBARINFO>() as u32,
-        rcTitleBar: RECT {left: 0, top: 0, right: 0, bottom: 0},
-        rgstate: [0; 6],
-    };
-    let _ = GetTitleBarInfo(hwnd, &mut ti);
-    if ti.rgstate[0] & STATE_SYSTEM_INVISIBLE.0 > 0 {
-        return BOOL(1);
-    }
+	// remove windows that are not in the current virtual desktop
+	let is_on_current_desktop =
+		winvd::is_window_on_current_desktop(hwnd as windows::Win32::Foundation::HWND)
+			.unwrap();
+	if !is_on_current_desktop {
+		return BOOL(1);
+	}
 
-    // remove "floating toolbar" windows that are not visible in alt+tab
-    if WINDOW_EX_STYLE(GetWindowLongW(hwnd, GWL_EXSTYLE).try_into().unwrap()) & WS_EX_TOOLWINDOW != WINDOW_EX_STYLE(0) {
-        return BOOL(1);
-    }
+	let _ = SetForegroundWindow(hwnd);
+	return BOOL(0); // Stop enumeration
+}
 
-    // remove windows with empty title bar
-    // + Settings window, for some reason this window is focused on empty desktops even if it is
-    //   not opened or visible in alt+tab or taskbar
-    let mut buffer: [u16; 256] = [0; 256];
-    GetWindowTextW(hwnd, &mut buffer);
-    let window_title = OsString::from_wide(&buffer).to_string_lossy().into_owned();
-    if window_title.is_empty() || window_title.contains("Settings") {
-        return BOOL(1)
-    }
+#[derive(Default)]
+struct OccupiedDesktopState {
+	highest_index: Option<u32>,
+}
 
-    // remove windows that are not in the current virtual desktop
-    let is_on_current_desktop = winvd::is_window_on_current_desktop(hwnd as windows::Win32::Foundation::HWND).unwrap();
-    if !is_on_current_desktop {
-        return BOOL(1)
-    }
+unsafe extern "system" fn enum_windows_and_find_highest_occupied_desktop(
+	hwnd: HWND,
+	lparam: LPARAM,
+) -> BOOL {
+	if !is_normal_window(hwnd) {
+		return BOOL(1);
+	}
+	let state = unsafe { &mut *(lparam.0 as *mut OccupiedDesktopState) };
+	if let Ok(index) =
+		winvd::get_desktop_by_window(hwnd).and_then(|desktop| desktop.get_index())
+	{
+		state.highest_index = Some(match state.highest_index {
+			Some(previous) => previous.max(index),
+			None => index,
+		});
+	}
+	return BOOL(1);
+}
 
-    let _ = SetForegroundWindow(hwnd);
-    return BOOL(0); // Stop enumeration
+fn highest_occupied_desktop_index() -> Option<u32> {
+	let mut state = OccupiedDesktopState::default();
+	unsafe {
+		let _ = EnumWindows(
+			Some(enum_windows_and_find_highest_occupied_desktop),
+			LPARAM {
+				0: (&mut state as *mut OccupiedDesktopState) as isize,
+			},
+		);
+	}
+	state.highest_index
+}
+
+fn protected_desktop_index() -> Option<u32> {
+	const PRUNE_GRACE: Duration = Duration::from_secs(5);
+	let lock = PRUNE_GRACE_DESKTOP.lock();
+	if lock.is_err() {
+		return None;
+	}
+	let mut guard = lock.unwrap();
+	match *guard {
+		Some((desktop, at)) if at.elapsed() < PRUNE_GRACE => Some(desktop),
+		Some(_) => {
+			*guard = None;
+			None
+		}
+		None => None,
+	}
+}
+
+fn is_normal_window(hwnd: HWND) -> bool {
+	unsafe {
+		if IsWindowVisible(hwnd) == false {
+			return false;
+		}
+		let mut class_name_buffer: [u16; 256] = [0; 256];
+		let class_len = GetClassNameW(hwnd, &mut class_name_buffer);
+		if class_len > 0 {
+			let class_name =
+				OsString::from_wide(&class_name_buffer[..class_len as usize])
+					.to_string_lossy()
+					.into_owned();
+			if class_name == "Progman"
+				|| class_name == "WorkerW"
+				|| class_name == "Shell_TrayWnd"
+				|| class_name == "Windows.UI.Core.CoreWindow"
+			{
+				return false;
+			}
+		}
+		let mut ti = TITLEBARINFO {
+			cbSize: std::mem::size_of::<TITLEBARINFO>() as u32,
+			rcTitleBar: RECT {
+				left: 0,
+				top: 0,
+				right: 0,
+				bottom: 0,
+			},
+			rgstate: [0; 6],
+		};
+		let _ = GetTitleBarInfo(hwnd, &mut ti);
+		if ti.rgstate[0] & STATE_SYSTEM_INVISIBLE.0 > 0 {
+			return false;
+		}
+		if WINDOW_EX_STYLE(GetWindowLongW(hwnd, GWL_EXSTYLE).try_into().unwrap())
+			& WS_EX_TOOLWINDOW
+			!= WINDOW_EX_STYLE(0)
+		{
+			return false;
+		}
+		let mut buffer: [u16; 256] = [0; 256];
+		GetWindowTextW(hwnd, &mut buffer);
+		let window_title = OsString::from_wide(&buffer).to_string_lossy().into_owned();
+		if window_title.is_empty()
+			|| window_title.contains("Settings")
+			|| window_title == "Program Manager"
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+fn remove_tail_desktops_if_possible() {
+	const REMOVE_RETRIES: u8 = 6;
+	let highest_occupied = highest_occupied_desktop_index().unwrap_or(0);
+	let protected_desktop = protected_desktop_index().unwrap_or(0);
+	let retain_until = highest_occupied.max(protected_desktop);
+	loop {
+		let desktop_count = match winvd::get_desktop_count() {
+			Ok(count) => count,
+			Err(_) => return,
+		};
+		if desktop_count <= 1 || desktop_count - 1 <= retain_until {
+			return;
+		}
+		let current_index = match winvd::get_current_desktop().and_then(|d| d.get_index())
+		{
+			Ok(index) => index,
+			Err(_) => return,
+		};
+		let tail_index = desktop_count - 1;
+		let fallback_index = tail_index - 1;
+		if current_index > retain_until {
+			if winvd::switch_desktop(retain_until).is_err() {
+				return;
+			}
+			thread::sleep(Duration::from_millis(80));
+			continue;
+		}
+		let mut removed = false;
+		for _ in 0..REMOVE_RETRIES {
+			if winvd::remove_desktop(tail_index, fallback_index).is_ok() {
+				removed = true;
+				break;
+			}
+			thread::sleep(Duration::from_millis(60));
+		}
+		if !removed {
+			return;
+		}
+		thread::sleep(Duration::from_millis(40));
+	}
 }
 
 fn switch_to_desktop(desktop: u32, tries: u8) {
 	if tries <= 10 {
 		match winvd::switch_desktop(desktop) {
-				Ok(_) => {
-                    unsafe {
-                        let _ = EnumWindows(Some(enum_windows_and_switch_app_focus), LPARAM {0: 0} );
-                    }
-                }
-				Err(_) => {
-					match winvd::create_desktop() {
-						Ok(_) => {
-							switch_to_desktop(desktop, tries + 1);
-						}
-						Err(e) => {
-							println!("Error: {:?}", e);
-					}
+			Ok(_) => {
+				if let Ok(mut guard) = PRUNE_GRACE_DESKTOP.lock() {
+					*guard = Some((desktop, Instant::now()));
 				}
+				unsafe {
+					let _ = EnumWindows(
+						Some(enum_windows_and_switch_app_focus),
+						LPARAM { 0: 0 },
+					);
+				}
+				remove_tail_desktops_if_possible();
 			}
+			Err(_) => match winvd::create_desktop() {
+				Ok(_) => {
+					switch_to_desktop(desktop, tries + 1);
+				}
+				Err(e) => {
+					println!("Error: {:?}", e);
+				}
+			},
 		}
 	}
 }
