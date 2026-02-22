@@ -75,11 +75,15 @@ BinkyBox will reject keyboard shortcuts not specified using the layout above, so
 
 Windows normally intercepts the Win key for its own system shortcuts (Start menu, Win+D, etc.), so you might wonder how BinkyBox is able to bind `LWIN` or `RWIN` combinations at all.
 
-BinkyBox installs a **low-level keyboard hook** (`WH_KEYBOARD_LL`) via the [`inputbot`](https://crates.io/crates/inputbot) library. This hook runs inside Windows's own input pipeline, before the OS has a chance to act on any reserved key combination. When BinkyBox detects that its configured shortcut is fully held down it returns `BlockInput::Block`, which tells Windows to swallow the keystroke entirely so the system never sees it. When the shortcut doesn't match, `BlockInput::DontBlock` is returned and Windows handles the key normally.
+BinkyBox installs a **low-level keyboard hook** (`WH_KEYBOARD_LL`) via the [`inputbot`](https://crates.io/crates/inputbot) library. `WH_KEYBOARD_LL` is an [officially supported, documented Windows API](https://learn.microsoft.com/en-us/windows/win32/winmsg/about-hooks#wh_keyboard_ll) (part of `SetWindowsHookEx`). This hook runs inside Windows's own input pipeline, before the OS has a chance to act on any reserved key combination. When BinkyBox detects that its configured shortcut is fully held down it returns `BlockInput::Block`, which tells Windows to swallow the keystroke entirely so the system never sees it. When the shortcut doesn't match, `BlockInput::DontBlock` is returned and Windows handles the key normally.
 
 This means:
 - Any `LWIN`/`RWIN` combination you configure in BinkyBox will shadow the equivalent Windows system shortcut for as long as BinkyBox is running.
 - Combinations you do _not_ configure are passed through to Windows unchanged.
+
+#### Win+L cannot be intercepted
+
+**Win+L** (lock screen) is a special exception. It is processed directly by `winlogon.exe` at the Windows security boundary — below the level at which any user-mode hook (including `WH_KEYBOARD_LL`) can see it. Microsoft intentionally prevents user-mode code from blocking Win+L so that users can always lock their screen regardless of what software is running. Configuring `LWIN+L` or `RWIN+L` as a BinkyBox shortcut will therefore have no effect.
 
 ## Adding to Windows Startup
 
