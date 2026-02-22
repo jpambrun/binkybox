@@ -87,6 +87,7 @@ lazy_static! {
 	.cloned()
 	.collect();
 	static ref PRUNE_GRACE_DESKTOP: Mutex<Option<(u32, Instant)>> = Mutex::new(None);
+	static ref PREVIOUS_DESKTOP: Mutex<Option<u32>> = Mutex::new(None);
 }
 
 pub async fn init() {
@@ -121,12 +122,30 @@ pub fn bind_shortcuts() {
 					} else {
 						None
 					};
-					switch_to_desktop(i, 0, moved_window);
+					switch_to_desktop(target_desktop_for_shortcut(i), 0, moved_window);
 					return inputbot::BlockInput::Block;
 				}
 				return inputbot::BlockInput::DontBlock;
 			});
 		}
+	}
+}
+
+fn target_desktop_for_shortcut(shortcut_desktop: u32) -> u32 {
+	let current_index =
+		match winvd::get_current_desktop().and_then(|desktop| desktop.get_index()) {
+			Ok(index) => index,
+			Err(_) => return shortcut_desktop,
+		};
+	if current_index != shortcut_desktop {
+		return shortcut_desktop;
+	}
+	match PREVIOUS_DESKTOP.lock() {
+		Ok(guard) => match *guard {
+			Some(previous) if previous != current_index => previous,
+			_ => shortcut_desktop,
+		},
+		Err(_) => shortcut_desktop,
 	}
 }
 
@@ -334,8 +353,17 @@ fn remove_tail_desktops_if_possible() {
 
 fn switch_to_desktop(desktop: u32, tries: u8, moved_window: Option<HWND>) {
 	if tries <= 10 {
+		let source_desktop =
+			winvd::get_current_desktop().and_then(|d| d.get_index()).ok();
 		match winvd::switch_desktop(desktop) {
 			Ok(_) => {
+				if let Some(source) = source_desktop {
+					if source != desktop {
+						if let Ok(mut guard) = PREVIOUS_DESKTOP.lock() {
+							*guard = Some(source);
+						}
+					}
+				}
 				if let Ok(mut guard) = PRUNE_GRACE_DESKTOP.lock() {
 					*guard = Some((desktop, Instant::now()));
 				}
