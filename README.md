@@ -71,6 +71,16 @@ The first modifier is required, and ending the sequence with an alphanumeric cha
 
 BinkyBox will reject keyboard shortcuts not specified using the layout above, so make sure you enter your keyboard shortcuts correctly. Keyboard shortcuts (and other settings) will be saved in a `binkybox.config.json` file located in the same directory as the BinkyBox executable.
 
+### How Win Key Shortcuts Work
+
+Windows normally intercepts the Win key for its own system shortcuts (Start menu, Win+D, etc.), so you might wonder how BinkyBox is able to bind `LWIN` or `RWIN` combinations at all.
+
+BinkyBox installs a **low-level keyboard hook** (`WH_KEYBOARD_LL`) via the [`inputbot`](https://crates.io/crates/inputbot) library. This hook runs inside Windows's own input pipeline, before the OS has a chance to act on any reserved key combination. When BinkyBox detects that its configured shortcut is fully held down it returns `BlockInput::Block`, which tells Windows to swallow the keystroke entirely so the system never sees it. When the shortcut doesn't match, `BlockInput::DontBlock` is returned and Windows handles the key normally.
+
+This means:
+- Any `LWIN`/`RWIN` combination you configure in BinkyBox will shadow the equivalent Windows system shortcut for as long as BinkyBox is running.
+- Combinations you do _not_ configure are passed through to Windows unchanged.
+
 ## Adding to Windows Startup
 
 You can make BinkyBox start automatically on Windows startup when you log in:
