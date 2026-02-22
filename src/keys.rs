@@ -6,10 +6,12 @@ use json::JsonValue;
 use lazy_static::lazy_static;
 use regex::Regex;
 use std::collections::HashMap;
+use std::process::Command;
 use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
+use std::os::windows::process::CommandExt;
 
 use windows::Win32::{
 	Foundation::*, UI::Controls::STATE_SYSTEM_INVISIBLE, UI::WindowsAndMessaging::*,
@@ -100,6 +102,8 @@ pub fn bind_shortcuts() {
 	for (_, value) in KEY_MAP.iter() {
 		value.unbind();
 	}
+	EnterKey.unbind();
+	bind_wezterm_shortcut();
 	for i in 0..9 {
 		let shortcut = process_shortcut(&my_config, i);
 		if let Some(key_to_bind) = shortcut.get(shortcut.len().saturating_sub(1)) {
@@ -129,6 +133,36 @@ pub fn bind_shortcuts() {
 			});
 		}
 	}
+}
+
+fn bind_wezterm_shortcut() {
+	const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+	const DETACHED_PROCESS: u32 = 0x0000_0008;
+	EnterKey.blockable_bind(move || {
+		if !(LSuper.is_pressed() || RSuper.is_pressed()) {
+			return inputbot::BlockInput::DontBlock;
+		}
+		let with_shift = LShiftKey.is_pressed() || RShiftKey.is_pressed();
+		if LControlKey.is_pressed()
+			|| RControlKey.is_pressed()
+			|| LAltKey.is_pressed()
+			|| RAltKey.is_pressed()
+		{
+			return inputbot::BlockInput::DontBlock;
+		}
+		let domain = if with_shift { "local" } else { "arch" };
+		let launched = Command::new("wezterm-gui.exe")
+			.arg("start")
+			.arg("--domain")
+			.arg(domain)
+			.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
+			.spawn()
+			.is_ok();
+		if launched {
+			return inputbot::BlockInput::Block;
+		}
+		inputbot::BlockInput::DontBlock
+	});
 }
 
 fn target_desktop_for_shortcut(shortcut_desktop: u32) -> u32 {
