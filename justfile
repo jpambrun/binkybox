@@ -1,14 +1,13 @@
-set shell := ["powershell.exe", "-NoLogo", "-Command"]
 set script-interpreter := ['bun', 'run']
 
 kill:
-	@Get-Process -Name binkybox -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; exit 0
+  @powershell.exe -Command "Get-Process -Name binkybox -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; exit 0"
 
 build: kill
-	@cargo build -r
+	@cargo build -r --target x86_64-pc-windows-gnu
 
 run: kill
-	& ".\\target\\release\\binkybox.exe"
+	cargo run --target x86_64-pc-windows-gnu
 
 buildrun: build run
 
