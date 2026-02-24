@@ -5,7 +5,7 @@ use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
 use std::os::windows::process::CommandExt;
 use std::process::Command;
-use std::sync::Mutex;
+use std::sync::{mpsc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
@@ -30,12 +30,57 @@ use windows_sys::Win32::{
 
 static KEYBOARD_HOOK: Mutex<isize> = Mutex::new(0);
 static KEYDOWN_STATE: Mutex<[bool; 256]> = Mutex::new([false; 256]);
+static ACTION_TX: OnceLock<mpsc::Sender<Action>> = OnceLock::new();
 static PRUNE_GRACE_DESKTOP: Mutex<Option<(u32, Instant)>> = Mutex::new(None);
 static PREVIOUS_DESKTOP: Mutex<Option<u32>> = Mutex::new(None);
 
+enum Action {
+	SwitchDesktop { desktop: u32, move_window: bool },
+	LaunchWezterm { local: bool },
+}
+
 pub async fn init() {
+	start_action_worker();
 	bind_shortcuts();
 	keyboard_event_loop();
+}
+
+fn start_action_worker() {
+	if ACTION_TX.get().is_some() {
+		return;
+	}
+	let (tx, rx) = mpsc::channel::<Action>();
+	if ACTION_TX.set(tx).is_err() {
+		return;
+	}
+	thread::spawn(move || {
+		while let Ok(action) = rx.recv() {
+			match action {
+				Action::SwitchDesktop {
+					desktop,
+					move_window,
+				} => {
+					let moved_window = if move_window {
+						active_window_for_move()
+					} else {
+						None
+					};
+					switch_to_desktop(
+						target_desktop_for_shortcut(desktop),
+						0,
+						moved_window,
+					);
+				}
+				Action::LaunchWezterm { local } => {
+					if local {
+						launch_wezterm("local");
+					} else {
+						launch_wezterm("arch");
+					}
+				}
+			}
+		}
+	});
 }
 
 pub fn bind_shortcuts() {
@@ -119,24 +164,23 @@ fn handle_keydown(vk: u32) -> bool {
 	let with_shift = is_shift_down();
 	if (b'1' as u32..=b'9' as u32).contains(&vk) {
 		let desktop = vk - b'1' as u32;
-		let moved_window = if with_shift {
-			active_window_for_move()
-		} else {
-			None
-		};
-		switch_to_desktop(target_desktop_for_shortcut(desktop), 0, moved_window);
-		return true;
+		return dispatch_action(Action::SwitchDesktop {
+			desktop,
+			move_window: with_shift,
+		});
 	}
 
 	if vk == VK_RETURN as u32 {
-		if with_shift {
-			launch_wezterm("local");
-		} else {
-			launch_wezterm("arch");
-		}
-		return true;
+		return dispatch_action(Action::LaunchWezterm { local: with_shift });
 	}
 
+	false
+}
+
+fn dispatch_action(action: Action) -> bool {
+	if let Some(tx) = ACTION_TX.get() {
+		return tx.send(action).is_ok();
+	}
 	false
 }
 
