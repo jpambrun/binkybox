@@ -5,31 +5,20 @@ use std::sync::mpsc;
 use tray_item::{IconSource, TrayItem};
 use winvd::DesktopEvent;
 
-use crate::gui;
 pub enum TrayMessage {
-	Settings,
 	Quit,
 }
 
 pub fn init() {
 	let mut tray = TrayItem::new("BinkyBox", IconSource::Resource("icon")).unwrap();
 	let (tx, rx) = mpsc::sync_channel(1);
-	let tx_0 = tx.to_owned();
-	tray.add_menu_item("Settings", move || {
-		tx.send(TrayMessage::Settings).unwrap();
-	})
-	.unwrap();
-	tray.inner_mut().add_separator().unwrap();
 	tray.add_menu_item("Quit", move || {
-		tx_0.send(TrayMessage::Quit).unwrap();
+		tx.send(TrayMessage::Quit).unwrap();
 	})
 	.unwrap();
 	tokio::spawn(icon_change_listener(tray));
 	loop {
 		match rx.recv() {
-			Ok(TrayMessage::Settings) => {
-				gui::init();
-			}
 			Ok(TrayMessage::Quit) => {
 				std::process::exit(0);
 			}

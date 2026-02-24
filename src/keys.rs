@@ -2,25 +2,33 @@
  * SPDX-License-Identifier: MIT */
 
 use inputbot::KeybdKey::{self, *};
-use json::JsonValue;
 use lazy_static::lazy_static;
-use regex::Regex;
 use std::collections::HashMap;
+use std::ffi::OsString;
+use std::os::windows::ffi::OsStringExt;
+use std::os::windows::process::CommandExt;
 use std::process::Command;
 use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
-use std::os::windows::process::CommandExt;
 
-use windows::Win32::{
-	Foundation::*, UI::Controls::STATE_SYSTEM_INVISIBLE, UI::WindowsAndMessaging::*,
+use windows_sys::Win32::{
+	Foundation::{BOOL, HWND, LPARAM, RECT},
+	UI::{
+		Controls::STATE_SYSTEM_INVISIBLE,
+		WindowsAndMessaging::{
+			EnumWindows, GetClassNameW, GetForegroundWindow, GetTitleBarInfo,
+			GetWindowLongW, GetWindowTextW, IsWindowVisible, SetForegroundWindow,
+			GWL_EXSTYLE, TITLEBARINFO, WS_EX_TOOLWINDOW,
+		},
+	},
 };
 
-use std::ffi::OsString;
-use std::os::windows::ffi::OsStringExt;
-
-use crate::config;
+const DEFAULT_SHORTCUTS: [&str; 9] = [
+	"LWIN+1", "LWIN+2", "LWIN+3", "LWIN+4", "LWIN+5", "LWIN+6", "LWIN+7", "LWIN+8",
+	"LWIN+9",
+];
 
 lazy_static! {
 	static ref KEY_MAP: HashMap<&'static str, KeybdKey> = [
@@ -98,14 +106,13 @@ pub async fn init() {
 }
 
 pub fn bind_shortcuts() {
-	let my_config = config::read();
 	for (_, value) in KEY_MAP.iter() {
 		value.unbind();
 	}
 	EnterKey.unbind();
 	bind_wezterm_shortcut();
 	for i in 0..9 {
-		let shortcut = process_shortcut(&my_config, i);
+		let shortcut = process_shortcut(i);
 		if let Some(key_to_bind) = shortcut.get(shortcut.len().saturating_sub(1)) {
 			key_to_bind.blockable_bind(move || {
 				if shortcut
@@ -196,7 +203,7 @@ fn should_move_active_window(shortcut: &[KeybdKey]) -> bool {
 fn active_window_for_move() -> Option<HWND> {
 	unsafe {
 		let hwnd = GetForegroundWindow();
-		if hwnd == HWND::default() || !is_normal_window(hwnd) {
+		if hwnd.is_null() || !is_normal_window(hwnd) {
 			return None;
 		}
 		return Some(hwnd);
@@ -205,7 +212,10 @@ fn active_window_for_move() -> Option<HWND> {
 
 fn focus_moved_window(window: HWND) -> bool {
 	for _ in 0..10 {
-		if matches!(winvd::is_window_on_current_desktop(window), Ok(true)) {
+		if matches!(
+			winvd::is_window_on_current_desktop(unsafe { std::mem::transmute(window) }),
+			Ok(true)
+		) {
 			unsafe {
 				let _ = SetForegroundWindow(window);
 			}
@@ -221,19 +231,18 @@ unsafe extern "system" fn enum_windows_and_switch_app_focus(
 	_lparam: LPARAM,
 ) -> BOOL {
 	if !is_normal_window(hwnd) {
-		return BOOL(1);
+		return 1;
 	}
 
-	// remove windows that are not in the current virtual desktop
 	let is_on_current_desktop =
-		winvd::is_window_on_current_desktop(hwnd as windows::Win32::Foundation::HWND)
-			.unwrap();
+		winvd::is_window_on_current_desktop(unsafe { std::mem::transmute(hwnd) })
+			.unwrap_or(false);
 	if !is_on_current_desktop {
-		return BOOL(1);
+		return 1;
 	}
 
 	let _ = SetForegroundWindow(hwnd);
-	return BOOL(0); // Stop enumeration
+	return 0;
 }
 
 #[derive(Default)]
@@ -246,18 +255,18 @@ unsafe extern "system" fn enum_windows_and_find_highest_occupied_desktop(
 	lparam: LPARAM,
 ) -> BOOL {
 	if !is_normal_window(hwnd) {
-		return BOOL(1);
+		return 1;
 	}
-	let state = unsafe { &mut *(lparam.0 as *mut OccupiedDesktopState) };
-	if let Ok(index) =
-		winvd::get_desktop_by_window(hwnd).and_then(|desktop| desktop.get_index())
+	let state = unsafe { &mut *(lparam as *mut OccupiedDesktopState) };
+	if let Ok(index) = winvd::get_desktop_by_window(unsafe { std::mem::transmute(hwnd) })
+		.and_then(|desktop| desktop.get_index())
 	{
 		state.highest_index = Some(match state.highest_index {
 			Some(previous) => previous.max(index),
 			None => index,
 		});
 	}
-	return BOOL(1);
+	return 1;
 }
 
 fn highest_occupied_desktop_index() -> Option<u32> {
@@ -265,9 +274,7 @@ fn highest_occupied_desktop_index() -> Option<u32> {
 	unsafe {
 		let _ = EnumWindows(
 			Some(enum_windows_and_find_highest_occupied_desktop),
-			LPARAM {
-				0: (&mut state as *mut OccupiedDesktopState) as isize,
-			},
+			(&mut state as *mut OccupiedDesktopState) as isize,
 		);
 	}
 	state.highest_index
@@ -292,11 +299,15 @@ fn protected_desktop_index() -> Option<u32> {
 
 fn is_normal_window(hwnd: HWND) -> bool {
 	unsafe {
-		if IsWindowVisible(hwnd) == false {
+		if IsWindowVisible(hwnd) == 0 {
 			return false;
 		}
 		let mut class_name_buffer: [u16; 256] = [0; 256];
-		let class_len = GetClassNameW(hwnd, &mut class_name_buffer);
+		let class_len = GetClassNameW(
+			hwnd,
+			class_name_buffer.as_mut_ptr(),
+			class_name_buffer.len() as i32,
+		);
 		if class_len > 0 {
 			let class_name =
 				OsString::from_wide(&class_name_buffer[..class_len as usize])
@@ -321,18 +332,17 @@ fn is_normal_window(hwnd: HWND) -> bool {
 			rgstate: [0; 6],
 		};
 		let _ = GetTitleBarInfo(hwnd, &mut ti);
-		if ti.rgstate[0] & STATE_SYSTEM_INVISIBLE.0 > 0 {
+		if ti.rgstate[0] & STATE_SYSTEM_INVISIBLE as u32 > 0 {
 			return false;
 		}
-		if WINDOW_EX_STYLE(GetWindowLongW(hwnd, GWL_EXSTYLE).try_into().unwrap())
-			& WS_EX_TOOLWINDOW
-			!= WINDOW_EX_STYLE(0)
-		{
+		if ((GetWindowLongW(hwnd, GWL_EXSTYLE) as u32) & WS_EX_TOOLWINDOW as u32) != 0 {
 			return false;
 		}
 		let mut buffer: [u16; 256] = [0; 256];
-		GetWindowTextW(hwnd, &mut buffer);
-		let window_title = OsString::from_wide(&buffer).to_string_lossy().into_owned();
+		let title_len = GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32);
+		let window_title = OsString::from_wide(&buffer[..title_len as usize])
+			.to_string_lossy()
+			.into_owned();
 		if window_title.is_empty()
 			|| window_title.contains("Settings")
 			|| window_title == "Program Manager"
@@ -387,8 +397,9 @@ fn remove_tail_desktops_if_possible() {
 
 fn switch_to_desktop(desktop: u32, tries: u8, moved_window: Option<HWND>) {
 	if tries <= 10 {
-		let source_desktop =
-			winvd::get_current_desktop().and_then(|d| d.get_index()).ok();
+		let source_desktop = winvd::get_current_desktop()
+			.and_then(|d| d.get_index())
+			.ok();
 		match winvd::switch_desktop(desktop) {
 			Ok(_) => {
 				if let Some(source) = source_desktop {
@@ -402,17 +413,15 @@ fn switch_to_desktop(desktop: u32, tries: u8, moved_window: Option<HWND>) {
 					*guard = Some((desktop, Instant::now()));
 				}
 				let moved_and_focused = moved_window.is_some_and(|window| {
-					if winvd::move_window_to_desktop(desktop, &window).is_ok() {
+					let winvd_window = unsafe { std::mem::transmute(window) };
+					if winvd::move_window_to_desktop(desktop, &winvd_window).is_ok() {
 						return focus_moved_window(window);
 					}
 					false
 				});
 				if !moved_and_focused {
 					unsafe {
-						let _ = EnumWindows(
-							Some(enum_windows_and_switch_app_focus),
-							LPARAM { 0: 0 },
-						);
+						let _ = EnumWindows(Some(enum_windows_and_switch_app_focus), 0);
 					}
 				}
 				remove_tail_desktops_if_possible();
@@ -429,31 +438,10 @@ fn switch_to_desktop(desktop: u32, tries: u8, moved_window: Option<HWND>) {
 	}
 }
 
-fn process_shortcut(config: &JsonValue, desktop: u32) -> Vec<KeybdKey> {
-	let desktop_str = format!("desktop_{}", desktop + 1);
-	let shortcut_sanitized =
-		sanitize_keyboard_shortcut(config["shortcuts"][&desktop_str].to_string());
-	let shortcut_string = match check_keyboard_shortcut(shortcut_sanitized.clone()) {
-		true => shortcut_sanitized,
-		false => config::get_default()["shortcuts"][&desktop_str].to_string(),
-	};
-	build_keyboard_shortcut(shortcut_string.as_str())
-}
-
-pub fn sanitize_keyboard_shortcut(input: String) -> String {
-	let mut input = input.to_uppercase();
-	input.retain(|c| !c.is_whitespace());
-	return input;
-}
-
-pub fn check_keyboard_shortcut(input: String) -> bool {
-	let re = Regex::new(
-		r"^((([LR]CTRL)|([LR]ALT)|([LR]WIN)|([LR]SHIFT)|(F\d))\+){1,4}([A-Z\d]|(F\d))$",
-	);
-	if re.is_err() {
-		return false;
-	}
-	return re.unwrap().is_match(&input);
+fn process_shortcut(desktop: u32) -> Vec<KeybdKey> {
+	DEFAULT_SHORTCUTS
+		.get(desktop as usize)
+		.map_or_else(Vec::new, |shortcut| build_keyboard_shortcut(shortcut))
 }
 
 fn build_keyboard_shortcut(input: &str) -> Vec<KeybdKey> {
