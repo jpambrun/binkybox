@@ -1,9 +1,6 @@
 /* SPDX-FileCopyrightText: © 2023 Nadim Kobeissi <nadim@symbolic.software>
  * SPDX-License-Identifier: MIT */
 
-use inputbot::KeybdKey::{self, *};
-use lazy_static::lazy_static;
-use std::collections::HashMap;
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
 use std::os::windows::process::CommandExt;
@@ -14,162 +11,169 @@ use std::time::Duration;
 use std::time::Instant;
 
 use windows_sys::Win32::{
-	Foundation::{BOOL, HWND, LPARAM, RECT},
+	Foundation::{BOOL, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
 	UI::{
 		Controls::STATE_SYSTEM_INVISIBLE,
+		Input::KeyboardAndMouse::{
+			VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_RCONTROL, VK_RETURN, VK_RMENU,
+			VK_RSHIFT, VK_RWIN,
+		},
 		WindowsAndMessaging::{
-			EnumWindows, GetClassNameW, GetForegroundWindow, GetTitleBarInfo,
-			GetWindowLongW, GetWindowTextW, IsWindowVisible, SetForegroundWindow,
-			GWL_EXSTYLE, TITLEBARINFO, WS_EX_TOOLWINDOW,
+			CallNextHookEx, EnumWindows, GetClassNameW, GetForegroundWindow, GetMessageW,
+			GetTitleBarInfo, GetWindowLongW, GetWindowTextW, IsWindowVisible,
+			SetForegroundWindow, SetWindowsHookExW, UnhookWindowsHookEx, GWL_EXSTYLE,
+			HC_ACTION, KBDLLHOOKSTRUCT, MSG, TITLEBARINFO, WH_KEYBOARD_LL, WM_KEYDOWN,
+			WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WS_EX_TOOLWINDOW,
 		},
 	},
 };
 
-const DEFAULT_SHORTCUTS: [&str; 9] = [
-	"LWIN+1", "LWIN+2", "LWIN+3", "LWIN+4", "LWIN+5", "LWIN+6", "LWIN+7", "LWIN+8",
-	"LWIN+9",
-];
-
-lazy_static! {
-	static ref KEY_MAP: HashMap<&'static str, KeybdKey> = [
-		("CTRL", LControlKey),
-		("LCTRL", LControlKey),
-		("RCTRL", RControlKey),
-		("ALT", LAltKey),
-		("LALT", LAltKey),
-		("RALT", RAltKey),
-		("WIN", LSuper),
-		("LWIN", LSuper),
-		("RWIN", RSuper),
-		("SHIFT", LShiftKey),
-		("LSHIFT", LShiftKey),
-		("RSHIFT", RShiftKey),
-		("F1", F1Key),
-		("F2", F2Key),
-		("F3", F3Key),
-		("F4", F4Key),
-		("F5", F5Key),
-		("F6", F6Key),
-		("F7", F7Key),
-		("F8", F8Key),
-		("F9", F9Key),
-		("F10", F10Key),
-		("F11", F11Key),
-		("F12", F12Key),
-		("A", AKey),
-		("B", BKey),
-		("C", CKey),
-		("D", DKey),
-		("E", EKey),
-		("F", FKey),
-		("G", GKey),
-		("H", HKey),
-		("I", IKey),
-		("J", JKey),
-		("K", KKey),
-		("L", LKey),
-		("M", MKey),
-		("N", NKey),
-		("O", OKey),
-		("P", PKey),
-		("Q", QKey),
-		("R", RKey),
-		("S", SKey),
-		("T", TKey),
-		("U", UKey),
-		("V", VKey),
-		("W", WKey),
-		("X", XKey),
-		("Y", YKey),
-		("Z", ZKey),
-		("1", Numrow1Key),
-		("2", Numrow2Key),
-		("3", Numrow3Key),
-		("4", Numrow4Key),
-		("5", Numrow5Key),
-		("6", Numrow6Key),
-		("7", Numrow7Key),
-		("8", Numrow8Key),
-		("9", Numrow9Key),
-		("0", Numrow0Key),
-	]
-	.iter()
-	.cloned()
-	.collect();
-	static ref PRUNE_GRACE_DESKTOP: Mutex<Option<(u32, Instant)>> = Mutex::new(None);
-	static ref PREVIOUS_DESKTOP: Mutex<Option<u32>> = Mutex::new(None);
-}
+static KEYBOARD_HOOK: Mutex<isize> = Mutex::new(0);
+static KEYDOWN_STATE: Mutex<[bool; 256]> = Mutex::new([false; 256]);
+static PRUNE_GRACE_DESKTOP: Mutex<Option<(u32, Instant)>> = Mutex::new(None);
+static PREVIOUS_DESKTOP: Mutex<Option<u32>> = Mutex::new(None);
 
 pub async fn init() {
 	bind_shortcuts();
-	inputbot::handle_input_events();
+	keyboard_event_loop();
 }
 
 pub fn bind_shortcuts() {
-	for (_, value) in KEY_MAP.iter() {
-		value.unbind();
-	}
-	EnterKey.unbind();
-	bind_wezterm_shortcut();
-	for i in 0..9 {
-		let shortcut = process_shortcut(i);
-		if let Some(key_to_bind) = shortcut.get(shortcut.len().saturating_sub(1)) {
-			key_to_bind.blockable_bind(move || {
-				if shortcut
-					.iter()
-					.take(shortcut.len() - 1)
-					.all(|key| key.is_pressed())
-				{
-					for (_, value) in KEY_MAP.iter() {
-						if value.is_pressed() && !shortcut.contains(value) {
-							if *value == LShiftKey || *value == RShiftKey {
-								continue;
-							}
-							return inputbot::BlockInput::DontBlock;
-						}
-					}
-					let moved_window = if should_move_active_window(&shortcut) {
-						active_window_for_move()
-					} else {
-						None
-					};
-					switch_to_desktop(target_desktop_for_shortcut(i), 0, moved_window);
-					return inputbot::BlockInput::Block;
+	unsafe {
+		if let Ok(mut hook_guard) = KEYBOARD_HOOK.lock() {
+			if *hook_guard == 0 {
+				let hook = SetWindowsHookExW(
+					WH_KEYBOARD_LL,
+					Some(low_level_keyboard_proc),
+					std::ptr::null_mut() as HINSTANCE,
+					0,
+				);
+				if !hook.is_null() {
+					*hook_guard = hook as isize;
 				}
-				return inputbot::BlockInput::DontBlock;
-			});
+			}
 		}
 	}
 }
 
-fn bind_wezterm_shortcut() {
+fn keyboard_event_loop() {
+	unsafe {
+		let mut msg: MSG = std::mem::zeroed();
+		while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {}
+		if let Ok(mut hook_guard) = KEYBOARD_HOOK.lock() {
+			if *hook_guard != 0 {
+				let _ = UnhookWindowsHookEx(*hook_guard as _);
+				*hook_guard = 0;
+			}
+		}
+	}
+}
+
+unsafe extern "system" fn low_level_keyboard_proc(
+	ncode: i32,
+	wparam: WPARAM,
+	lparam: LPARAM,
+) -> LRESULT {
+	if ncode != HC_ACTION as i32 {
+		return CallNextHookEx(std::ptr::null_mut(), ncode, wparam, lparam);
+	}
+
+	let kb = &*(lparam as *const KBDLLHOOKSTRUCT);
+	let vk = kb.vkCode as u32;
+	let message = wparam as u32;
+
+	if message == WM_KEYUP || message == WM_SYSKEYUP {
+		if vk < 256 {
+			if let Ok(mut state) = KEYDOWN_STATE.lock() {
+				state[vk as usize] = false;
+			}
+		}
+		return CallNextHookEx(std::ptr::null_mut(), ncode, wparam, lparam);
+	}
+
+	if message != WM_KEYDOWN && message != WM_SYSKEYDOWN {
+		return CallNextHookEx(std::ptr::null_mut(), ncode, wparam, lparam);
+	}
+
+	if vk < 256 {
+		if let Ok(mut state) = KEYDOWN_STATE.lock() {
+			if state[vk as usize] {
+				return CallNextHookEx(std::ptr::null_mut(), ncode, wparam, lparam);
+			}
+			state[vk as usize] = true;
+		}
+	}
+
+	if handle_keydown(vk) {
+		return 1;
+	}
+
+	CallNextHookEx(std::ptr::null_mut(), ncode, wparam, lparam)
+}
+
+fn handle_keydown(vk: u32) -> bool {
+	if !is_win_down() || is_ctrl_or_alt_down() {
+		return false;
+	}
+
+	let with_shift = is_shift_down();
+	if (b'1' as u32..=b'9' as u32).contains(&vk) {
+		let desktop = vk - b'1' as u32;
+		let moved_window = if with_shift {
+			active_window_for_move()
+		} else {
+			None
+		};
+		switch_to_desktop(target_desktop_for_shortcut(desktop), 0, moved_window);
+		return true;
+	}
+
+	if vk == VK_RETURN as u32 {
+		if with_shift {
+			launch_wezterm("local");
+		} else {
+			launch_wezterm("arch");
+		}
+		return true;
+	}
+
+	false
+}
+
+fn is_win_down() -> bool {
+	key_is_down(VK_LWIN as u32) || key_is_down(VK_RWIN as u32)
+}
+
+fn is_shift_down() -> bool {
+	key_is_down(VK_LSHIFT as u32) || key_is_down(VK_RSHIFT as u32)
+}
+
+fn is_ctrl_or_alt_down() -> bool {
+	key_is_down(VK_LCONTROL as u32)
+		|| key_is_down(VK_RCONTROL as u32)
+		|| key_is_down(VK_LMENU as u32)
+		|| key_is_down(VK_RMENU as u32)
+}
+
+fn key_is_down(vkey: u32) -> bool {
+	if vkey >= 256 {
+		return false;
+	}
+	if let Ok(state) = KEYDOWN_STATE.lock() {
+		return state[vkey as usize];
+	}
+	false
+}
+
+fn launch_wezterm(domain: &str) {
 	const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 	const DETACHED_PROCESS: u32 = 0x0000_0008;
-	EnterKey.blockable_bind(move || {
-		if !(LSuper.is_pressed() || RSuper.is_pressed()) {
-			return inputbot::BlockInput::DontBlock;
-		}
-		let with_shift = LShiftKey.is_pressed() || RShiftKey.is_pressed();
-		if LControlKey.is_pressed()
-			|| RControlKey.is_pressed()
-			|| LAltKey.is_pressed()
-			|| RAltKey.is_pressed()
-		{
-			return inputbot::BlockInput::DontBlock;
-		}
-		let domain = if with_shift { "local" } else { "arch" };
-		let launched = Command::new("wezterm-gui.exe")
-			.arg("start")
-			.arg("--domain")
-			.arg(domain)
-			.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
-			.spawn()
-			.is_ok();
-		if launched {
-			return inputbot::BlockInput::Block;
-		}
-		inputbot::BlockInput::DontBlock
-	});
+	let _ = Command::new("wezterm-gui.exe")
+		.arg("start")
+		.arg("--domain")
+		.arg(domain)
+		.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
+		.spawn();
 }
 
 fn target_desktop_for_shortcut(shortcut_desktop: u32) -> u32 {
@@ -188,16 +192,6 @@ fn target_desktop_for_shortcut(shortcut_desktop: u32) -> u32 {
 		},
 		Err(_) => shortcut_desktop,
 	}
-}
-
-fn should_move_active_window(shortcut: &[KeybdKey]) -> bool {
-	if !(LShiftKey.is_pressed() || RShiftKey.is_pressed()) {
-		return false;
-	}
-	if shortcut.contains(&LShiftKey) || shortcut.contains(&RShiftKey) {
-		return false;
-	}
-	return true;
 }
 
 fn active_window_for_move() -> Option<HWND> {
@@ -436,18 +430,4 @@ fn switch_to_desktop(desktop: u32, tries: u8, moved_window: Option<HWND>) {
 			},
 		}
 	}
-}
-
-fn process_shortcut(desktop: u32) -> Vec<KeybdKey> {
-	DEFAULT_SHORTCUTS
-		.get(desktop as usize)
-		.map_or_else(Vec::new, |shortcut| build_keyboard_shortcut(shortcut))
-}
-
-fn build_keyboard_shortcut(input: &str) -> Vec<KeybdKey> {
-	input
-		.split('+')
-		.filter_map(|part| KEY_MAP.get(&part))
-		.cloned()
-		.collect()
 }
