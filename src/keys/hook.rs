@@ -138,13 +138,13 @@ unsafe extern "system" fn low_level_keyboard_proc(
 	}
 
 	if handle_keydown(vk) {
-		if is_win_down() {
+		if is_win_modifier_down() {
 			WIN_COMBO_USED.store(true, Ordering::Relaxed);
 		}
 		return 1;
 	}
 
-	if is_win_down() {
+	if is_win_modifier_down() {
 		ensure_native_win_passthrough_started();
 	}
 
@@ -152,9 +152,10 @@ unsafe extern "system" fn low_level_keyboard_proc(
 }
 
 fn handle_keydown(vk: u32) -> bool {
+	let win_down = is_win_modifier_down();
 	let action = shortcut_action_for_key(
 		vk,
-		is_win_down(),
+		win_down,
 		is_ctrl_or_alt_down(),
 		is_shift_down(),
 	);
@@ -192,6 +193,10 @@ fn shortcut_action_for_key(
 
 fn is_win_down() -> bool {
 	key_is_down(VK_LWIN as u32) || key_is_down(VK_RWIN as u32)
+}
+
+fn is_win_modifier_down() -> bool {
+	is_win_down() || INTERCEPTED_WIN_KEY.load(Ordering::Relaxed) != 0
 }
 
 fn is_shift_down() -> bool {
