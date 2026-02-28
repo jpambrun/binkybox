@@ -18,7 +18,6 @@ use windows_sys::Win32::{
 use super::desktop::draggable_window_from_point;
 use super::drag;
 use super::key_is_down;
-use super::log;
 
 static MOUSE_HOOK: Mutex<isize> = Mutex::new(0);
 static MOVE_WORKER_STARTED: OnceLock<()> = OnceLock::new();
@@ -47,9 +46,6 @@ pub(crate) fn bind_mouse_hook() {
 				);
 				if !hook.is_null() {
 					*hook_guard = hook as isize;
-					log::event("mouse_hook bind ok");
-				} else {
-					log::event("mouse_hook bind failed");
 				}
 			}
 		}
@@ -61,7 +57,6 @@ fn start_move_worker() {
 		return;
 	}
 	thread::spawn(move_worker_loop);
-	log::event("mouse move worker started");
 }
 
 fn move_worker_loop() {
@@ -89,15 +84,11 @@ fn move_worker_loop() {
 				right: 0,
 				bottom: 0,
 			};
-			unsafe {
-				if GetWindowRect(snapshot.hwnd, &mut rect) == 0 {
-					log::event(&format!(
-						"begin move failed hwnd={:#x} getrect=0",
-						snapshot.hwnd as isize
-					));
-					session = None;
-					continue;
-				}
+				unsafe {
+					if GetWindowRect(snapshot.hwnd, &mut rect) == 0 {
+						session = None;
+						continue;
+					}
 			}
 			session = Some(MoveSession {
 				hwnd: snapshot.hwnd as isize,
@@ -108,10 +99,6 @@ fn move_worker_loop() {
 				width: rect.right - rect.left,
 				height: rect.bottom - rect.top,
 			});
-			log::event(&format!(
-				"begin move hwnd={:#x} origin=({}, {})",
-				snapshot.hwnd as isize, rect.left, rect.top
-			));
 		}
 
 		let active = match &session {
@@ -126,12 +113,7 @@ fn move_worker_loop() {
 		}
 		unsafe {
 			let ok = MoveWindow(active.hwnd as HWND, new_x, new_y, active.width, active.height, 0);
-			if ok == 0 {
-				log::event(&format!(
-					"move worker movewindow failed hwnd={:#x} x={} y={} w={} h={}",
-					active.hwnd, new_x, new_y, active.width, active.height
-				));
-			}
+			let _ = ok;
 		}
 	}
 }
@@ -142,7 +124,6 @@ pub(crate) fn unbind_mouse_hook() {
 			if *hook_guard != 0 {
 				let _ = UnhookWindowsHookEx(*hook_guard as _);
 				*hook_guard = 0;
-				log::event("mouse_hook unbound");
 			}
 		}
 	}
@@ -170,11 +151,6 @@ unsafe extern "system" fn low_level_mouse_proc(
 			} else {
 				None
 			};
-			let target = target_window.map(|hwnd| hwnd as isize).unwrap_or(0);
-			log::event(&format!(
-				"mouse down lwin_down={} x={} y={} target={:#x}",
-				lwin_down, x, y, target
-			));
 			drag::on_down(lwin_down, target_window, x, y);
 			if lwin_down && target_window.is_some() {
 				return 1;
@@ -188,7 +164,6 @@ unsafe extern "system" fn low_level_mouse_proc(
 		}
 		WM_LBUTTONUP => {
 			let was_drag_gesture = drag::gesture_active();
-			log::event("mouse up");
 			drag::on_up();
 			if was_drag_gesture {
 				return 1;

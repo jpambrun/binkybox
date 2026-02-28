@@ -2,8 +2,6 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, Ordering};
 
 use windows_sys::Win32::Foundation::HWND;
 
-use super::log;
-
 const DRAG_THRESHOLD_SQ: i32 = 16;
 
 static GESTURE_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -38,10 +36,6 @@ pub(crate) fn on_down(lwin_down: bool, candidate_window: Option<HWND>, x: i32, y
 	CONSUME_NEXT_LWIN_KEYUP.store(false, Ordering::Relaxed);
 	GESTURE_ACTIVE.store(active, Ordering::Relaxed);
 
-	log::event(&format!(
-		"drag down active={} lwin_down={} x={} y={} candidate={:#x}",
-		active, lwin_down, x, y, candidate
-	));
 }
 
 pub(crate) fn on_move(x: i32, y: i32) {
@@ -64,25 +58,18 @@ pub(crate) fn on_move(x: i32, y: i32) {
 
 	DRAG_TRIGGERED.store(true, Ordering::Relaxed);
 	CONSUME_NEXT_LWIN_KEYUP.store(true, Ordering::Relaxed);
-	let hwnd = CANDIDATE_HWND.load(Ordering::Relaxed);
-	log::event(&format!(
-		"drag trigger x={} y={} hwnd={:#x}",
-		x, y, hwnd
-	));
 }
 
 pub(crate) fn on_up() {
 	GESTURE_ACTIVE.store(false, Ordering::Relaxed);
 	DRAG_TRIGGERED.store(false, Ordering::Relaxed);
 	CANDIDATE_HWND.store(0, Ordering::Relaxed);
-	log::event("drag up");
 }
 
 pub(crate) fn on_cancel() {
 	GESTURE_ACTIVE.store(false, Ordering::Relaxed);
 	DRAG_TRIGGERED.store(false, Ordering::Relaxed);
 	CANDIDATE_HWND.store(0, Ordering::Relaxed);
-	log::event("drag cancel");
 }
 
 pub(crate) fn gesture_active() -> bool {
@@ -107,7 +94,5 @@ pub(crate) fn snapshot_for_worker() -> Option<DragSnapshot> {
 }
 
 pub(crate) fn take_consume_next_lwin_keyup() -> bool {
-	let consume = CONSUME_NEXT_LWIN_KEYUP.swap(false, Ordering::Relaxed);
-	log::event(&format!("drag consume_lwin_keyup={}", consume));
-	consume
+	CONSUME_NEXT_LWIN_KEYUP.swap(false, Ordering::Relaxed)
 }

@@ -5,7 +5,6 @@ mod actions;
 mod desktop;
 mod drag;
 mod hook;
-mod log;
 mod mouse_hook;
 
 use std::sync::Mutex;
@@ -13,7 +12,6 @@ use std::sync::Mutex;
 static KEYDOWN_STATE: Mutex<[bool; 256]> = Mutex::new([false; 256]);
 
 pub async fn init() {
-	log::session("keys::init");
 	actions::start_action_worker();
 	hook::bind_shortcuts();
 	mouse_hook::bind_mouse_hook();

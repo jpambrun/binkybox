@@ -6,7 +6,6 @@ use std::thread;
 use super::desktop::{
 	active_window_for_move, switch_to_desktop, target_desktop_for_shortcut,
 };
-use super::log;
 
 #[derive(Clone, Copy)]
 pub(crate) enum Action {
@@ -26,7 +25,6 @@ pub(crate) fn start_action_worker() {
 		return;
 	}
 	thread::spawn(move || {
-		log::event("action worker started");
 		while let Ok(action) = rx.recv() {
 			match action {
 				Action::SwitchDesktop {
@@ -52,7 +50,6 @@ pub(crate) fn start_action_worker() {
 					}
 				}
 				Action::Quit => {
-					log::event("action quit");
 					std::process::exit(0);
 				}
 			}
