@@ -6,13 +6,14 @@ use std::time::Duration;
 use std::time::Instant;
 
 use windows_sys::Win32::{
-	Foundation::{BOOL, HWND, LPARAM, RECT},
+	Foundation::{BOOL, HWND, LPARAM, POINT, RECT},
 	UI::{
 		Controls::STATE_SYSTEM_INVISIBLE,
 		WindowsAndMessaging::{
-			EnumWindows, GetClassNameW, GetForegroundWindow, GetTitleBarInfo,
-			GetWindowLongW, GetWindowTextW, IsWindowVisible, SetForegroundWindow,
-			GWL_EXSTYLE, TITLEBARINFO, WS_EX_TOOLWINDOW,
+			EnumWindows, GetAncestor, GetClassNameW, GetForegroundWindow,
+			GetTitleBarInfo, GetWindowLongW, GetWindowTextW, IsWindowVisible,
+			SetForegroundWindow, WindowFromPoint, GA_ROOT, GWL_EXSTYLE,
+			TITLEBARINFO, WS_EX_TOOLWINDOW,
 		},
 	},
 };
@@ -45,6 +46,21 @@ pub(crate) fn active_window_for_move() -> Option<HWND> {
 			return None;
 		}
 		return Some(hwnd);
+	}
+}
+
+pub(crate) fn draggable_window_from_point(x: i32, y: i32) -> Option<HWND> {
+	unsafe {
+		let hwnd = WindowFromPoint(POINT { x, y });
+		if hwnd.is_null() {
+			return None;
+		}
+		let root = GetAncestor(hwnd, GA_ROOT);
+		let target = if root.is_null() { hwnd } else { root };
+		if target.is_null() || !is_draggable_window(target) {
+			return None;
+		}
+		Some(target)
 	}
 }
 
@@ -189,6 +205,37 @@ fn is_normal_window(hwnd: HWND) -> bool {
 		}
 	}
 	return true;
+}
+
+fn is_draggable_window(hwnd: HWND) -> bool {
+	unsafe {
+		if IsWindowVisible(hwnd) == 0 {
+			return false;
+		}
+		let mut class_name_buffer: [u16; 256] = [0; 256];
+		let class_len = GetClassNameW(
+			hwnd,
+			class_name_buffer.as_mut_ptr(),
+			class_name_buffer.len() as i32,
+		);
+		if class_len > 0 {
+			let class_name =
+				OsString::from_wide(&class_name_buffer[..class_len as usize])
+					.to_string_lossy()
+					.into_owned();
+			if class_name == "Progman"
+				|| class_name == "WorkerW"
+				|| class_name == "Shell_TrayWnd"
+				|| class_name == "Windows.UI.Core.CoreWindow"
+			{
+				return false;
+			}
+		}
+		if ((GetWindowLongW(hwnd, GWL_EXSTYLE) as u32) & WS_EX_TOOLWINDOW as u32) != 0 {
+			return false;
+		}
+	}
+	true
 }
 
 fn remove_tail_desktops_if_possible() {
