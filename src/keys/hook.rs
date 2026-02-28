@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 
 use windows_sys::Win32::{
@@ -22,7 +22,7 @@ use super::mouse_hook;
 use super::{key_is_down, KEYDOWN_STATE};
 
 static KEYBOARD_HOOK: Mutex<isize> = Mutex::new(0);
-static LWIN_INTERCEPT_ACTIVE: AtomicBool = AtomicBool::new(false);
+static INTERCEPTED_WIN_KEY: AtomicU32 = AtomicU32::new(0);
 static WIN_COMBO_USED: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn bind_shortcuts() {
@@ -35,7 +35,9 @@ pub(crate) fn bind_shortcuts() {
 					std::ptr::null_mut() as HINSTANCE,
 					0,
 				);
-				if !hook.is_null() {
+				if hook.is_null() {
+					eprintln!("[keys/hook] failed to install keyboard hook");
+				} else {
 					*hook_guard = hook as isize;
 				}
 			}
@@ -88,19 +90,16 @@ unsafe extern "system" fn low_level_keyboard_proc(
 			}
 		}
 
-		if vk == VK_LWIN as u32 {
+		if is_win_vk(vk) {
 			drag::on_cancel();
-			mouse_hook::cancel_drag_move();
 			let dragged = drag::take_consume_next_lwin_keyup();
 			let combo_used = WIN_COMBO_USED.swap(false, Ordering::Relaxed);
-			let intercepted =
-				LWIN_INTERCEPT_ACTIVE.swap(false, Ordering::Relaxed);
+			let intercepted_key = INTERCEPTED_WIN_KEY.swap(0, Ordering::Relaxed);
+			let intercepted = intercepted_key == vk;
 			if intercepted {
-				if !dragged && !combo_used {
-					unsafe {
-						keybd_event(VK_LWIN as u8, 0, 0, 0);
-						keybd_event(VK_LWIN as u8, 0, KEYEVENTF_KEYUP, 0);
-					}
+				if should_replay_win_key(dragged, combo_used, intercepted) {
+					keybd_event(vk as u8, 0, 0, 0);
+					keybd_event(vk as u8, 0, KEYEVENTF_KEYUP, 0);
 				}
 				return 1;
 			}
@@ -115,7 +114,7 @@ unsafe extern "system" fn low_level_keyboard_proc(
 	if vk < 256 {
 		if let Ok(mut state) = KEYDOWN_STATE.lock() {
 			if state[vk as usize] {
-				if vk == VK_LWIN as u32 {
+				if is_win_vk(vk) {
 					return 1;
 				}
 				return CallNextHookEx(std::ptr::null_mut(), ncode, wparam, lparam);
@@ -124,13 +123,13 @@ unsafe extern "system" fn low_level_keyboard_proc(
 		}
 	}
 
-	if vk == VK_LWIN as u32 {
-		LWIN_INTERCEPT_ACTIVE.store(true, Ordering::Relaxed);
+	if is_win_vk(vk) {
+		INTERCEPTED_WIN_KEY.store(vk, Ordering::Relaxed);
 		WIN_COMBO_USED.store(false, Ordering::Relaxed);
 		return 1;
 	}
 
-	if key_is_down(VK_LWIN as u32) {
+	if is_win_down() {
 		WIN_COMBO_USED.store(true, Ordering::Relaxed);
 	}
 
@@ -142,28 +141,42 @@ unsafe extern "system" fn low_level_keyboard_proc(
 }
 
 fn handle_keydown(vk: u32) -> bool {
-	if !is_win_down() || is_ctrl_or_alt_down() {
-		return false;
+	let action = shortcut_action_for_key(
+		vk,
+		is_win_down(),
+		is_ctrl_or_alt_down(),
+		is_shift_down(),
+	);
+	action.is_some_and(dispatch_action)
+}
+
+fn shortcut_action_for_key(
+	vk: u32,
+	win_down: bool,
+	ctrl_alt_down: bool,
+	shift_down: bool,
+) -> Option<Action> {
+	if !win_down || ctrl_alt_down {
+		return None;
 	}
 
-	let with_shift = is_shift_down();
 	if (b'1' as u32..=b'9' as u32).contains(&vk) {
 		let desktop = vk - b'1' as u32;
-		return dispatch_action(Action::SwitchDesktop {
+		return Some(Action::SwitchDesktop {
 			desktop,
-			move_window: with_shift,
+			move_window: shift_down,
 		});
 	}
 
 	if vk == VK_RETURN as u32 {
-		return dispatch_action(Action::LaunchWezterm { local: with_shift });
+		return Some(Action::LaunchWezterm { local: shift_down });
 	}
 
 	if vk == VK_Q as u32 {
-		return dispatch_action(Action::Quit);
+		return Some(Action::Quit);
 	}
 
-	false
+	None
 }
 
 fn is_win_down() -> bool {
@@ -179,4 +192,74 @@ fn is_ctrl_or_alt_down() -> bool {
 		|| key_is_down(VK_RCONTROL as u32)
 		|| key_is_down(VK_LMENU as u32)
 		|| key_is_down(VK_RMENU as u32)
+}
+
+fn is_win_vk(vk: u32) -> bool {
+	vk == VK_LWIN as u32 || vk == VK_RWIN as u32
+}
+
+fn should_replay_win_key(dragged: bool, combo_used: bool, intercepted: bool) -> bool {
+	intercepted && !dragged && !combo_used
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn win_key_detection_supports_both_keys() {
+		assert!(is_win_vk(VK_LWIN as u32));
+		assert!(is_win_vk(VK_RWIN as u32));
+		assert!(!is_win_vk(VK_Q as u32));
+	}
+
+	#[test]
+	fn replay_requires_intercept_without_combo_or_drag() {
+		assert!(should_replay_win_key(false, false, true));
+		assert!(!should_replay_win_key(true, false, true));
+		assert!(!should_replay_win_key(false, true, true));
+		assert!(!should_replay_win_key(false, false, false));
+	}
+
+	#[test]
+	fn number_shortcuts_map_to_desktops_and_shift_move() {
+		assert_eq!(
+			shortcut_action_for_key(b'1' as u32, true, false, false),
+			Some(Action::SwitchDesktop {
+				desktop: 0,
+				move_window: false,
+			})
+		);
+		assert_eq!(
+			shortcut_action_for_key(b'9' as u32, true, false, true),
+			Some(Action::SwitchDesktop {
+				desktop: 8,
+				move_window: true,
+			})
+		);
+	}
+
+	#[test]
+	fn enter_shortcut_uses_shift_for_local_domain_choice() {
+		assert_eq!(
+			shortcut_action_for_key(VK_RETURN as u32, true, false, false),
+			Some(Action::LaunchWezterm { local: false })
+		);
+		assert_eq!(
+			shortcut_action_for_key(VK_RETURN as u32, true, false, true),
+			Some(Action::LaunchWezterm { local: true })
+		);
+	}
+
+	#[test]
+	fn ctrl_or_alt_blocks_shortcut_dispatch() {
+		assert_eq!(
+			shortcut_action_for_key(b'2' as u32, true, true, false),
+			None
+		);
+		assert_eq!(
+			shortcut_action_for_key(VK_Q as u32, false, false, false),
+			None
+		);
+	}
 }

@@ -2,6 +2,7 @@
  * SPDX-License-Identifier: MIT */
 
 use std::sync::mpsc;
+
 use tray_item::{IconSource, TrayItem};
 use winvd::DesktopEvent;
 
@@ -10,19 +11,34 @@ pub enum TrayMessage {
 }
 
 pub fn init() {
-	let mut tray = TrayItem::new("BinkyBox", IconSource::Resource("icon")).unwrap();
+	let mut tray = match TrayItem::new("BinkyBox", IconSource::Resource("icon")) {
+		Ok(tray) => tray,
+		Err(err) => {
+			eprintln!("[tray] failed to initialize tray icon: {}", err);
+			return;
+		}
+	};
+
 	let (tx, rx) = mpsc::sync_channel(1);
-	tray.add_menu_item("Quit", move || {
-		tx.send(TrayMessage::Quit).unwrap();
-	})
-	.unwrap();
+	if let Err(err) = tray.add_menu_item("Quit", move || {
+		if tx.send(TrayMessage::Quit).is_err() {
+			eprintln!("[tray] failed to send quit message: channel closed");
+		}
+	}) {
+		eprintln!("[tray] failed to add tray menu item: {}", err);
+		return;
+	}
+
 	tokio::spawn(icon_change_listener(tray));
 	loop {
 		match rx.recv() {
 			Ok(TrayMessage::Quit) => {
 				std::process::exit(0);
 			}
-			_ => {}
+			Err(err) => {
+				eprintln!("[tray] quit channel closed: {}", err);
+				return;
+			}
 		}
 	}
 }
@@ -31,20 +47,33 @@ async fn icon_change_listener(mut tray: TrayItem) {
 	let (tx, rx) = std::sync::mpsc::channel::<DesktopEvent>();
 	let _notifications_thread = winvd::listen_desktop_events(tx);
 	for event in rx {
-		match event {
-			DesktopEvent::DesktopChanged { new: n, old: _ } => match n.get_index() {
-				Ok(0) => tray.set_icon(IconSource::Resource("num_1")).unwrap(),
-				Ok(1) => tray.set_icon(IconSource::Resource("num_2")).unwrap(),
-				Ok(2) => tray.set_icon(IconSource::Resource("num_3")).unwrap(),
-				Ok(3) => tray.set_icon(IconSource::Resource("num_4")).unwrap(),
-				Ok(4) => tray.set_icon(IconSource::Resource("num_5")).unwrap(),
-				Ok(5) => tray.set_icon(IconSource::Resource("num_6")).unwrap(),
-				Ok(6) => tray.set_icon(IconSource::Resource("num_7")).unwrap(),
-				Ok(7) => tray.set_icon(IconSource::Resource("num_8")).unwrap(),
-				Ok(8) => tray.set_icon(IconSource::Resource("num_9")).unwrap(),
-				_ => {}
-			},
-			_ => {}
+		if let DesktopEvent::DesktopChanged { new: n, old: _ } = event {
+			if let Ok(index) = n.get_index() {
+				if let Some(icon) = icon_resource_for_index(index) {
+					if let Err(err) = tray.set_icon(IconSource::Resource(icon)) {
+						eprintln!(
+							"[tray] failed to update tray icon for desktop {}: {}",
+							index + 1,
+							err
+						);
+					}
+				}
+			}
 		}
+	}
+}
+
+fn icon_resource_for_index(index: u32) -> Option<&'static str> {
+	match index {
+		0 => Some("num_1"),
+		1 => Some("num_2"),
+		2 => Some("num_3"),
+		3 => Some("num_4"),
+		4 => Some("num_5"),
+		5 => Some("num_6"),
+		6 => Some("num_7"),
+		7 => Some("num_8"),
+		8 => Some("num_9"),
+		_ => None,
 	}
 }

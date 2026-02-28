@@ -35,7 +35,6 @@ pub(crate) fn on_down(lwin_down: bool, candidate_window: Option<HWND>, x: i32, y
 	DRAG_TRIGGERED.store(false, Ordering::Relaxed);
 	CONSUME_NEXT_LWIN_KEYUP.store(false, Ordering::Relaxed);
 	GESTURE_ACTIVE.store(active, Ordering::Relaxed);
-
 }
 
 pub(crate) fn on_move(x: i32, y: i32) {
@@ -77,7 +76,8 @@ pub(crate) fn gesture_active() -> bool {
 }
 
 pub(crate) fn snapshot_for_worker() -> Option<DragSnapshot> {
-	if !GESTURE_ACTIVE.load(Ordering::Relaxed) || !DRAG_TRIGGERED.load(Ordering::Relaxed) {
+	if !GESTURE_ACTIVE.load(Ordering::Relaxed) || !DRAG_TRIGGERED.load(Ordering::Relaxed)
+	{
 		return None;
 	}
 	let hwnd = CANDIDATE_HWND.load(Ordering::Relaxed);

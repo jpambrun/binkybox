@@ -7,7 +7,7 @@ use super::desktop::{
 	active_window_for_move, switch_to_desktop, target_desktop_for_shortcut,
 };
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Action {
 	SwitchDesktop { desktop: u32, move_window: bool },
 	LaunchWezterm { local: bool },
@@ -59,18 +59,29 @@ pub(crate) fn start_action_worker() {
 
 pub(crate) fn dispatch_action(action: Action) -> bool {
 	if let Some(tx) = ACTION_TX.get() {
-		return tx.send(action).is_ok();
+		if tx.send(action).is_ok() {
+			return true;
+		}
+		eprintln!("[keys/actions] failed to dispatch action: channel closed");
+		return false;
 	}
+	eprintln!("[keys/actions] failed to dispatch action: worker not initialized");
 	false
 }
 
 fn launch_wezterm(domain: &str) {
 	const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 	const DETACHED_PROCESS: u32 = 0x0000_0008;
-	let _ = Command::new("wezterm-gui.exe")
+	if let Err(err) = Command::new("wezterm-gui.exe")
 		.arg("start")
 		.arg("--domain")
 		.arg(domain)
 		.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
-		.spawn();
+		.spawn()
+	{
+		eprintln!(
+			"[keys/actions] failed to launch wezterm for domain '{}': {}",
+			domain, err
+		);
+	}
 }

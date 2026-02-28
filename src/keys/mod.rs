@@ -11,7 +11,7 @@ use std::sync::Mutex;
 
 static KEYDOWN_STATE: Mutex<[bool; 256]> = Mutex::new([false; 256]);
 
-pub async fn init() {
+pub fn init() {
 	actions::start_action_worker();
 	hook::bind_shortcuts();
 	mouse_hook::bind_mouse_hook();

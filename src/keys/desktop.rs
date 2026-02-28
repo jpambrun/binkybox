@@ -12,8 +12,8 @@ use windows_sys::Win32::{
 		WindowsAndMessaging::{
 			EnumWindows, GetAncestor, GetClassNameW, GetForegroundWindow,
 			GetTitleBarInfo, GetWindowLongW, GetWindowTextW, IsWindowVisible,
-			SetForegroundWindow, WindowFromPoint, GA_ROOT, GWL_EXSTYLE,
-			TITLEBARINFO, WS_EX_TOOLWINDOW,
+			SetForegroundWindow, WindowFromPoint, GA_ROOT, GWL_EXSTYLE, TITLEBARINFO,
+			WS_EX_TOOLWINDOW,
 		},
 	},
 };

@@ -44,7 +44,9 @@ pub(crate) fn bind_mouse_hook() {
 					std::ptr::null_mut() as HINSTANCE,
 					0,
 				);
-				if !hook.is_null() {
+				if hook.is_null() {
+					eprintln!("[keys/mouse] failed to install mouse hook");
+				} else {
 					*hook_guard = hook as isize;
 				}
 			}
@@ -84,11 +86,11 @@ fn move_worker_loop() {
 				right: 0,
 				bottom: 0,
 			};
-				unsafe {
-					if GetWindowRect(snapshot.hwnd, &mut rect) == 0 {
-						session = None;
-						continue;
-					}
+			unsafe {
+				if GetWindowRect(snapshot.hwnd, &mut rect) == 0 {
+					session = None;
+					continue;
+				}
 			}
 			session = Some(MoveSession {
 				hwnd: snapshot.hwnd as isize,
@@ -112,7 +114,14 @@ fn move_worker_loop() {
 			continue;
 		}
 		unsafe {
-			let ok = MoveWindow(active.hwnd as HWND, new_x, new_y, active.width, active.height, 0);
+			let ok = MoveWindow(
+				active.hwnd as HWND,
+				new_x,
+				new_y,
+				active.width,
+				active.height,
+				0,
+			);
 			let _ = ok;
 		}
 	}
@@ -174,5 +183,3 @@ unsafe extern "system" fn low_level_mouse_proc(
 
 	CallNextHookEx(std::ptr::null_mut(), ncode, wparam, lparam)
 }
-
-pub(crate) fn cancel_drag_move() {}

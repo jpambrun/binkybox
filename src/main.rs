@@ -17,6 +17,8 @@ async fn main() {
 		let _ = FreeConsole();
 	}
 
-	tokio::spawn(keys::init());
+	let _ = std::thread::Builder::new()
+		.name("binkybox-keys".to_string())
+		.spawn(keys::init);
 	tray::init();
 }
