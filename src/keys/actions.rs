@@ -28,7 +28,7 @@ pub(crate) fn start_action_worker() {
 	}
 	thread::spawn(move || {
 		while let Ok(action) = rx.recv() {
-			match action {
+			let result = std::panic::catch_unwind(|| match action {
 				Action::SwitchDesktop {
 					desktop,
 					move_window,
@@ -54,6 +54,9 @@ pub(crate) fn start_action_worker() {
 				Action::Quit => {
 					std::process::exit(0);
 				}
+			});
+			if result.is_err() {
+				log_error("keys/actions", "action worker panicked while handling action");
 			}
 		}
 	});
