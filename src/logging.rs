@@ -9,6 +9,7 @@ use windows_sys::Win32::System::Console::{
 #[cfg(windows)]
 use windows_sys::Win32::System::Diagnostics::Debug::OutputDebugStringW;
 
+#[allow(dead_code)]
 pub(crate) fn log_error(component: &str, message: &str) {
 	log_line(component, message);
 }
@@ -22,6 +23,7 @@ fn log_line(component: &str, message: &str) {
 	if write_to_console(&line) {
 		return;
 	}
+	eprintln!("{}", line);
 	debug_log(&line);
 }
 
