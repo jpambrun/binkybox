@@ -24,6 +24,7 @@ use super::{key_is_down, KEYDOWN_STATE};
 static KEYBOARD_HOOK: Mutex<isize> = Mutex::new(0);
 static INTERCEPTED_WIN_KEY: AtomicU32 = AtomicU32::new(0);
 static WIN_COMBO_USED: AtomicBool = AtomicBool::new(false);
+static WIN_NATIVE_PASSTHROUGH: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn bind_shortcuts() {
 	unsafe {
@@ -94,9 +95,15 @@ unsafe extern "system" fn low_level_keyboard_proc(
 			drag::on_cancel();
 			let dragged = drag::take_consume_next_lwin_keyup();
 			let combo_used = WIN_COMBO_USED.swap(false, Ordering::Relaxed);
+			let native_passthrough =
+				WIN_NATIVE_PASSTHROUGH.swap(false, Ordering::Relaxed);
 			let intercepted_key = INTERCEPTED_WIN_KEY.swap(0, Ordering::Relaxed);
 			let intercepted = intercepted_key == vk;
 			if intercepted {
+				if native_passthrough {
+					keybd_event(vk as u8, 0, KEYEVENTF_KEYUP, 0);
+					return 1;
+				}
 				if should_replay_win_key(dragged, combo_used, intercepted) {
 					keybd_event(vk as u8, 0, 0, 0);
 					keybd_event(vk as u8, 0, KEYEVENTF_KEYUP, 0);
@@ -126,15 +133,19 @@ unsafe extern "system" fn low_level_keyboard_proc(
 	if is_win_vk(vk) {
 		INTERCEPTED_WIN_KEY.store(vk, Ordering::Relaxed);
 		WIN_COMBO_USED.store(false, Ordering::Relaxed);
+		WIN_NATIVE_PASSTHROUGH.store(false, Ordering::Relaxed);
+		return 1;
+	}
+
+	if handle_keydown(vk) {
+		if is_win_down() {
+			WIN_COMBO_USED.store(true, Ordering::Relaxed);
+		}
 		return 1;
 	}
 
 	if is_win_down() {
-		WIN_COMBO_USED.store(true, Ordering::Relaxed);
-	}
-
-	if handle_keydown(vk) {
-		return 1;
+		ensure_native_win_passthrough_started();
 	}
 
 	CallNextHookEx(std::ptr::null_mut(), ncode, wparam, lparam)
@@ -196,6 +207,20 @@ fn is_ctrl_or_alt_down() -> bool {
 
 fn is_win_vk(vk: u32) -> bool {
 	vk == VK_LWIN as u32 || vk == VK_RWIN as u32
+}
+
+fn ensure_native_win_passthrough_started() {
+	if WIN_NATIVE_PASSTHROUGH.load(Ordering::Relaxed) {
+		return;
+	}
+	let win_vk = INTERCEPTED_WIN_KEY.load(Ordering::Relaxed);
+	if win_vk == 0 {
+		return;
+	}
+	unsafe {
+		keybd_event(win_vk as u8, 0, 0, 0);
+	}
+	WIN_NATIVE_PASSTHROUGH.store(true, Ordering::Relaxed);
 }
 
 fn should_replay_win_key(dragged: bool, combo_used: bool, intercepted: bool) -> bool {
