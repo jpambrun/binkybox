@@ -1,0 +1,130 @@
+use std::sync::Mutex;
+
+use windows_sys::Win32::{
+	Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM},
+	UI::{
+		Input::KeyboardAndMouse::{
+			VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_RCONTROL, VK_RETURN, VK_RMENU,
+			VK_RSHIFT, VK_RWIN,
+		},
+		WindowsAndMessaging::{
+			CallNextHookEx, GetMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
+			HC_ACTION, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP,
+			WM_SYSKEYDOWN, WM_SYSKEYUP,
+		},
+	},
+};
+
+use super::actions::{dispatch_action, Action};
+use super::{key_is_down, KEYDOWN_STATE};
+
+static KEYBOARD_HOOK: Mutex<isize> = Mutex::new(0);
+
+pub(crate) fn bind_shortcuts() {
+	unsafe {
+		if let Ok(mut hook_guard) = KEYBOARD_HOOK.lock() {
+			if *hook_guard == 0 {
+				let hook = SetWindowsHookExW(
+					WH_KEYBOARD_LL,
+					Some(low_level_keyboard_proc),
+					std::ptr::null_mut() as HINSTANCE,
+					0,
+				);
+				if !hook.is_null() {
+					*hook_guard = hook as isize;
+				}
+			}
+		}
+	}
+}
+
+pub(crate) fn keyboard_event_loop() {
+	unsafe {
+		let mut msg: MSG = std::mem::zeroed();
+		while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {}
+		if let Ok(mut hook_guard) = KEYBOARD_HOOK.lock() {
+			if *hook_guard != 0 {
+				let _ = UnhookWindowsHookEx(*hook_guard as _);
+				*hook_guard = 0;
+			}
+		}
+	}
+}
+
+unsafe extern "system" fn low_level_keyboard_proc(
+	ncode: i32,
+	wparam: WPARAM,
+	lparam: LPARAM,
+) -> LRESULT {
+	if ncode != HC_ACTION as i32 {
+		return CallNextHookEx(std::ptr::null_mut(), ncode, wparam, lparam);
+	}
+
+	let kb = &*(lparam as *const KBDLLHOOKSTRUCT);
+	let vk = kb.vkCode as u32;
+	let message = wparam as u32;
+
+	if message == WM_KEYUP || message == WM_SYSKEYUP {
+		if vk < 256 {
+			if let Ok(mut state) = KEYDOWN_STATE.lock() {
+				state[vk as usize] = false;
+			}
+		}
+		return CallNextHookEx(std::ptr::null_mut(), ncode, wparam, lparam);
+	}
+
+	if message != WM_KEYDOWN && message != WM_SYSKEYDOWN {
+		return CallNextHookEx(std::ptr::null_mut(), ncode, wparam, lparam);
+	}
+
+	if vk < 256 {
+		if let Ok(mut state) = KEYDOWN_STATE.lock() {
+			if state[vk as usize] {
+				return CallNextHookEx(std::ptr::null_mut(), ncode, wparam, lparam);
+			}
+			state[vk as usize] = true;
+		}
+	}
+
+	if handle_keydown(vk) {
+		return 1;
+	}
+
+	CallNextHookEx(std::ptr::null_mut(), ncode, wparam, lparam)
+}
+
+fn handle_keydown(vk: u32) -> bool {
+	if !is_win_down() || is_ctrl_or_alt_down() {
+		return false;
+	}
+
+	let with_shift = is_shift_down();
+	if (b'1' as u32..=b'9' as u32).contains(&vk) {
+		let desktop = vk - b'1' as u32;
+		return dispatch_action(Action::SwitchDesktop {
+			desktop,
+			move_window: with_shift,
+		});
+	}
+
+	if vk == VK_RETURN as u32 {
+		return dispatch_action(Action::LaunchWezterm { local: with_shift });
+	}
+
+	false
+}
+
+fn is_win_down() -> bool {
+	key_is_down(VK_LWIN as u32) || key_is_down(VK_RWIN as u32)
+}
+
+fn is_shift_down() -> bool {
+	key_is_down(VK_LSHIFT as u32) || key_is_down(VK_RSHIFT as u32)
+}
+
+fn is_ctrl_or_alt_down() -> bool {
+	key_is_down(VK_LCONTROL as u32)
+		|| key_is_down(VK_RCONTROL as u32)
+		|| key_is_down(VK_LMENU as u32)
+		|| key_is_down(VK_RMENU as u32)
+}

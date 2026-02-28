@@ -1,226 +1,26 @@
-/* SPDX-FileCopyrightText: © 2023 Nadim Kobeissi <nadim@symbolic.software>
- * SPDX-License-Identifier: MIT */
-
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
-use std::os::windows::process::CommandExt;
-use std::process::Command;
-use std::sync::{mpsc, Mutex, OnceLock};
+use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
 use windows_sys::Win32::{
-	Foundation::{BOOL, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
+	Foundation::{BOOL, HWND, LPARAM, RECT},
 	UI::{
 		Controls::STATE_SYSTEM_INVISIBLE,
-		Input::KeyboardAndMouse::{
-			VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_RCONTROL, VK_RETURN, VK_RMENU,
-			VK_RSHIFT, VK_RWIN,
-		},
 		WindowsAndMessaging::{
-			CallNextHookEx, EnumWindows, GetClassNameW, GetForegroundWindow, GetMessageW,
-			GetTitleBarInfo, GetWindowLongW, GetWindowTextW, IsWindowVisible,
-			SetForegroundWindow, SetWindowsHookExW, UnhookWindowsHookEx, GWL_EXSTYLE,
-			HC_ACTION, KBDLLHOOKSTRUCT, MSG, TITLEBARINFO, WH_KEYBOARD_LL, WM_KEYDOWN,
-			WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WS_EX_TOOLWINDOW,
+			EnumWindows, GetClassNameW, GetForegroundWindow, GetTitleBarInfo,
+			GetWindowLongW, GetWindowTextW, IsWindowVisible, SetForegroundWindow,
+			GWL_EXSTYLE, TITLEBARINFO, WS_EX_TOOLWINDOW,
 		},
 	},
 };
 
-static KEYBOARD_HOOK: Mutex<isize> = Mutex::new(0);
-static KEYDOWN_STATE: Mutex<[bool; 256]> = Mutex::new([false; 256]);
-static ACTION_TX: OnceLock<mpsc::Sender<Action>> = OnceLock::new();
 static PRUNE_GRACE_DESKTOP: Mutex<Option<(u32, Instant)>> = Mutex::new(None);
 static PREVIOUS_DESKTOP: Mutex<Option<u32>> = Mutex::new(None);
 
-enum Action {
-	SwitchDesktop { desktop: u32, move_window: bool },
-	LaunchWezterm { local: bool },
-}
-
-pub async fn init() {
-	start_action_worker();
-	bind_shortcuts();
-	keyboard_event_loop();
-}
-
-fn start_action_worker() {
-	if ACTION_TX.get().is_some() {
-		return;
-	}
-	let (tx, rx) = mpsc::channel::<Action>();
-	if ACTION_TX.set(tx).is_err() {
-		return;
-	}
-	thread::spawn(move || {
-		while let Ok(action) = rx.recv() {
-			match action {
-				Action::SwitchDesktop {
-					desktop,
-					move_window,
-				} => {
-					let moved_window = if move_window {
-						active_window_for_move()
-					} else {
-						None
-					};
-					switch_to_desktop(
-						target_desktop_for_shortcut(desktop),
-						0,
-						moved_window,
-					);
-				}
-				Action::LaunchWezterm { local } => {
-					if local {
-						launch_wezterm("local");
-					} else {
-						launch_wezterm("arch");
-					}
-				}
-			}
-		}
-	});
-}
-
-pub fn bind_shortcuts() {
-	unsafe {
-		if let Ok(mut hook_guard) = KEYBOARD_HOOK.lock() {
-			if *hook_guard == 0 {
-				let hook = SetWindowsHookExW(
-					WH_KEYBOARD_LL,
-					Some(low_level_keyboard_proc),
-					std::ptr::null_mut() as HINSTANCE,
-					0,
-				);
-				if !hook.is_null() {
-					*hook_guard = hook as isize;
-				}
-			}
-		}
-	}
-}
-
-fn keyboard_event_loop() {
-	unsafe {
-		let mut msg: MSG = std::mem::zeroed();
-		while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {}
-		if let Ok(mut hook_guard) = KEYBOARD_HOOK.lock() {
-			if *hook_guard != 0 {
-				let _ = UnhookWindowsHookEx(*hook_guard as _);
-				*hook_guard = 0;
-			}
-		}
-	}
-}
-
-unsafe extern "system" fn low_level_keyboard_proc(
-	ncode: i32,
-	wparam: WPARAM,
-	lparam: LPARAM,
-) -> LRESULT {
-	if ncode != HC_ACTION as i32 {
-		return CallNextHookEx(std::ptr::null_mut(), ncode, wparam, lparam);
-	}
-
-	let kb = &*(lparam as *const KBDLLHOOKSTRUCT);
-	let vk = kb.vkCode as u32;
-	let message = wparam as u32;
-
-	if message == WM_KEYUP || message == WM_SYSKEYUP {
-		if vk < 256 {
-			if let Ok(mut state) = KEYDOWN_STATE.lock() {
-				state[vk as usize] = false;
-			}
-		}
-		return CallNextHookEx(std::ptr::null_mut(), ncode, wparam, lparam);
-	}
-
-	if message != WM_KEYDOWN && message != WM_SYSKEYDOWN {
-		return CallNextHookEx(std::ptr::null_mut(), ncode, wparam, lparam);
-	}
-
-	if vk < 256 {
-		if let Ok(mut state) = KEYDOWN_STATE.lock() {
-			if state[vk as usize] {
-				return CallNextHookEx(std::ptr::null_mut(), ncode, wparam, lparam);
-			}
-			state[vk as usize] = true;
-		}
-	}
-
-	if handle_keydown(vk) {
-		return 1;
-	}
-
-	CallNextHookEx(std::ptr::null_mut(), ncode, wparam, lparam)
-}
-
-fn handle_keydown(vk: u32) -> bool {
-	if !is_win_down() || is_ctrl_or_alt_down() {
-		return false;
-	}
-
-	let with_shift = is_shift_down();
-	if (b'1' as u32..=b'9' as u32).contains(&vk) {
-		let desktop = vk - b'1' as u32;
-		return dispatch_action(Action::SwitchDesktop {
-			desktop,
-			move_window: with_shift,
-		});
-	}
-
-	if vk == VK_RETURN as u32 {
-		return dispatch_action(Action::LaunchWezterm { local: with_shift });
-	}
-
-	false
-}
-
-fn dispatch_action(action: Action) -> bool {
-	if let Some(tx) = ACTION_TX.get() {
-		return tx.send(action).is_ok();
-	}
-	false
-}
-
-fn is_win_down() -> bool {
-	key_is_down(VK_LWIN as u32) || key_is_down(VK_RWIN as u32)
-}
-
-fn is_shift_down() -> bool {
-	key_is_down(VK_LSHIFT as u32) || key_is_down(VK_RSHIFT as u32)
-}
-
-fn is_ctrl_or_alt_down() -> bool {
-	key_is_down(VK_LCONTROL as u32)
-		|| key_is_down(VK_RCONTROL as u32)
-		|| key_is_down(VK_LMENU as u32)
-		|| key_is_down(VK_RMENU as u32)
-}
-
-fn key_is_down(vkey: u32) -> bool {
-	if vkey >= 256 {
-		return false;
-	}
-	if let Ok(state) = KEYDOWN_STATE.lock() {
-		return state[vkey as usize];
-	}
-	false
-}
-
-fn launch_wezterm(domain: &str) {
-	const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-	const DETACHED_PROCESS: u32 = 0x0000_0008;
-	let _ = Command::new("wezterm-gui.exe")
-		.arg("start")
-		.arg("--domain")
-		.arg(domain)
-		.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
-		.spawn();
-}
-
-fn target_desktop_for_shortcut(shortcut_desktop: u32) -> u32 {
+pub(crate) fn target_desktop_for_shortcut(shortcut_desktop: u32) -> u32 {
 	let current_index =
 		match winvd::get_current_desktop().and_then(|desktop| desktop.get_index()) {
 			Ok(index) => index,
@@ -238,7 +38,7 @@ fn target_desktop_for_shortcut(shortcut_desktop: u32) -> u32 {
 	}
 }
 
-fn active_window_for_move() -> Option<HWND> {
+pub(crate) fn active_window_for_move() -> Option<HWND> {
 	unsafe {
 		let hwnd = GetForegroundWindow();
 		if hwnd.is_null() || !is_normal_window(hwnd) {
@@ -433,7 +233,7 @@ fn remove_tail_desktops_if_possible() {
 	}
 }
 
-fn switch_to_desktop(desktop: u32, tries: u8, moved_window: Option<HWND>) {
+pub(crate) fn switch_to_desktop(desktop: u32, tries: u8, moved_window: Option<HWND>) {
 	if tries <= 10 {
 		let source_desktop = winvd::get_current_desktop()
 			.and_then(|d| d.get_index())
