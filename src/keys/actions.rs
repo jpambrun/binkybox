@@ -3,6 +3,8 @@ use std::process::Command;
 use std::sync::{mpsc, OnceLock};
 use std::thread;
 
+use crate::logging::log_error;
+
 use super::desktop::{
 	active_window_for_move, switch_to_desktop, target_desktop_for_shortcut,
 };
@@ -62,10 +64,13 @@ pub(crate) fn dispatch_action(action: Action) -> bool {
 		if tx.send(action).is_ok() {
 			return true;
 		}
-		eprintln!("[keys/actions] failed to dispatch action: channel closed");
+		log_error("keys/actions", "failed to dispatch action: channel closed");
 		return false;
 	}
-	eprintln!("[keys/actions] failed to dispatch action: worker not initialized");
+	log_error(
+		"keys/actions",
+		"failed to dispatch action: worker not initialized",
+	);
 	false
 }
 
@@ -79,9 +84,12 @@ fn launch_wezterm(domain: &str) {
 		.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
 		.spawn()
 	{
-		eprintln!(
-			"[keys/actions] failed to launch wezterm for domain '{}': {}",
-			domain, err
+		log_error(
+			"keys/actions",
+			&format!(
+				"failed to launch wezterm for domain '{}': {}",
+				domain, err
+			),
 		);
 	}
 }
