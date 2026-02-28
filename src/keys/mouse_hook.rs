@@ -176,6 +176,9 @@ unsafe extern "system" fn low_level_mouse_proc(
 				lwin_down, x, y, target
 			));
 			drag::on_down(lwin_down, target_window, x, y);
+			if lwin_down && target_window.is_some() {
+				return 1;
+			}
 		}
 		WM_MOUSEMOVE => {
 			if !drag::gesture_active() {
@@ -184,8 +187,12 @@ unsafe extern "system" fn low_level_mouse_proc(
 			drag::on_move(x, y);
 		}
 		WM_LBUTTONUP => {
+			let was_drag_gesture = drag::gesture_active();
 			log::event("mouse up");
 			drag::on_up();
+			if was_drag_gesture {
+				return 1;
+			}
 		}
 		_ => {}
 	}
