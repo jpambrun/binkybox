@@ -71,7 +71,7 @@ Built-in shortcuts:
 - `Win+~` switches to the previous desktop.
 - `Win+Shift+~` moves the active window to the previous desktop and switches there.
 - Plain `Win+Left`, `Win+Right`, `Win+Up`, and `Win+Down` snap the active window into halves and quadrants without using Windows maximize/minimize behavior.
-- `Win+Shift+Left` and `Win+Shift+Right` move the active window to the previous/next virtual desktop and switch there.
+- `Win+Ctrl+Shift+Left` and `Win+Ctrl+Shift+Right` move the active window to the previous/next virtual desktop and switch there.
 
 Right click the tray icon and open _Settings_ in order to set your own keyboard shortcuts. BinkyBox keyboard shortcuts follow this layout: `MODIFIER+OPTIONAL_MODIFIER+OPTIONAL_MODIFIER+OPTIONAL_MODIFIER+ALPHANUMERIC_CHAR_OR_FKEY`.
 

@@ -87,7 +87,7 @@ unsafe extern "system" fn low_level_keyboard_proc(
 			}
 		}
 
-		if vk == VK_Q as u32 && is_win_down() && !is_ctrl_or_alt_down() {
+		if vk == VK_Q as u32 && is_win_down() && !is_ctrl_down() && !is_alt_down() {
 			if dispatch_action(Action::Quit) {
 				return 1;
 			}
@@ -155,18 +155,40 @@ unsafe extern "system" fn low_level_keyboard_proc(
 
 fn handle_keydown(vk: u32) -> bool {
 	let win_down = is_win_modifier_down();
-	let action =
-		shortcut_action_for_key(vk, win_down, is_ctrl_or_alt_down(), is_shift_down());
+	let action = shortcut_action_for_key(
+		vk,
+		win_down,
+		is_ctrl_down(),
+		is_alt_down(),
+		is_shift_down(),
+	);
 	action.is_some_and(dispatch_action)
 }
 
 fn shortcut_action_for_key(
 	vk: u32,
 	win_down: bool,
-	ctrl_alt_down: bool,
+	ctrl_down: bool,
+	alt_down: bool,
 	shift_down: bool,
 ) -> Option<Action> {
-	if !win_down || ctrl_alt_down {
+	if !win_down || alt_down {
+		return None;
+	}
+
+	if ctrl_down && shift_down {
+		match vk {
+			value if value == VK_LEFT as u32 => {
+				return Some(Action::MoveWindowToAdjacentDesktop { delta: -1 });
+			}
+			value if value == VK_RIGHT as u32 => {
+				return Some(Action::MoveWindowToAdjacentDesktop { delta: 1 });
+			}
+			_ => {}
+		}
+	}
+
+	if ctrl_down {
 		return None;
 	}
 
@@ -197,18 +219,6 @@ fn shortcut_action_for_key(
 		}
 	}
 
-	if shift_down {
-		match vk {
-			value if value == VK_LEFT as u32 => {
-				return Some(Action::MoveWindowToAdjacentDesktop { delta: -1 });
-			}
-			value if value == VK_RIGHT as u32 => {
-				return Some(Action::MoveWindowToAdjacentDesktop { delta: 1 });
-			}
-			_ => {}
-		}
-	}
-
 	if vk == VK_RETURN as u32 {
 		return Some(Action::LaunchWezterm { local: shift_down });
 	}
@@ -232,11 +242,12 @@ fn is_shift_down() -> bool {
 	key_is_down(VK_LSHIFT as u32) || key_is_down(VK_RSHIFT as u32)
 }
 
-fn is_ctrl_or_alt_down() -> bool {
-	key_is_down(VK_LCONTROL as u32)
-		|| key_is_down(VK_RCONTROL as u32)
-		|| key_is_down(VK_LMENU as u32)
-		|| key_is_down(VK_RMENU as u32)
+fn is_ctrl_down() -> bool {
+	key_is_down(VK_LCONTROL as u32) || key_is_down(VK_RCONTROL as u32)
+}
+
+fn is_alt_down() -> bool {
+	key_is_down(VK_LMENU as u32) || key_is_down(VK_RMENU as u32)
 }
 
 fn is_win_vk(vk: u32) -> bool {
@@ -283,14 +294,14 @@ mod tests {
 	#[test]
 	fn number_shortcuts_map_to_desktops_and_shift_move() {
 		assert_eq!(
-			shortcut_action_for_key(b'1' as u32, true, false, false),
+			shortcut_action_for_key(b'1' as u32, true, false, false, false),
 			Some(Action::SwitchDesktop {
 				desktop: 0,
 				move_window: false,
 			})
 		);
 		assert_eq!(
-			shortcut_action_for_key(b'9' as u32, true, false, true),
+			shortcut_action_for_key(b'9' as u32, true, false, false, true),
 			Some(Action::SwitchDesktop {
 				desktop: 8,
 				move_window: true,
@@ -301,11 +312,11 @@ mod tests {
 	#[test]
 	fn tilde_shortcuts_toggle_previous_desktop_and_shift_moves() {
 		assert_eq!(
-			shortcut_action_for_key(VK_OEM_3 as u32, true, false, false),
+			shortcut_action_for_key(VK_OEM_3 as u32, true, false, false, false),
 			Some(Action::TogglePreviousDesktop { move_window: false })
 		);
 		assert_eq!(
-			shortcut_action_for_key(VK_OEM_3 as u32, true, false, true),
+			shortcut_action_for_key(VK_OEM_3 as u32, true, false, false, true),
 			Some(Action::TogglePreviousDesktop { move_window: true })
 		);
 	}
@@ -313,25 +324,25 @@ mod tests {
 	#[test]
 	fn plain_arrow_shortcuts_map_to_snap_actions() {
 		assert_eq!(
-			shortcut_action_for_key(VK_LEFT as u32, true, false, false),
+			shortcut_action_for_key(VK_LEFT as u32, true, false, false, false),
 			Some(Action::SnapWindow {
 				direction: SnapDirection::Left,
 			})
 		);
 		assert_eq!(
-			shortcut_action_for_key(VK_RIGHT as u32, true, false, false),
+			shortcut_action_for_key(VK_RIGHT as u32, true, false, false, false),
 			Some(Action::SnapWindow {
 				direction: SnapDirection::Right,
 			})
 		);
 		assert_eq!(
-			shortcut_action_for_key(VK_UP as u32, true, false, false),
+			shortcut_action_for_key(VK_UP as u32, true, false, false, false),
 			Some(Action::SnapWindow {
 				direction: SnapDirection::Up,
 			})
 		);
 		assert_eq!(
-			shortcut_action_for_key(VK_DOWN as u32, true, false, false),
+			shortcut_action_for_key(VK_DOWN as u32, true, false, false, false),
 			Some(Action::SnapWindow {
 				direction: SnapDirection::Down,
 			})
@@ -339,13 +350,13 @@ mod tests {
 	}
 
 	#[test]
-	fn shift_left_right_move_window_to_adjacent_desktops() {
+	fn ctrl_shift_left_right_move_window_to_adjacent_desktops() {
 		assert_eq!(
-			shortcut_action_for_key(VK_LEFT as u32, true, false, true),
+			shortcut_action_for_key(VK_LEFT as u32, true, true, false, true),
 			Some(Action::MoveWindowToAdjacentDesktop { delta: -1 })
 		);
 		assert_eq!(
-			shortcut_action_for_key(VK_RIGHT as u32, true, false, true),
+			shortcut_action_for_key(VK_RIGHT as u32, true, true, false, true),
 			Some(Action::MoveWindowToAdjacentDesktop { delta: 1 })
 		);
 	}
@@ -353,11 +364,11 @@ mod tests {
 	#[test]
 	fn shift_up_down_remain_native() {
 		assert_eq!(
-			shortcut_action_for_key(VK_UP as u32, true, false, true),
+			shortcut_action_for_key(VK_UP as u32, true, false, false, true),
 			None
 		);
 		assert_eq!(
-			shortcut_action_for_key(VK_DOWN as u32, true, false, true),
+			shortcut_action_for_key(VK_DOWN as u32, true, false, false, true),
 			None
 		);
 	}
@@ -365,31 +376,35 @@ mod tests {
 	#[test]
 	fn enter_shortcut_uses_shift_for_local_domain_choice() {
 		assert_eq!(
-			shortcut_action_for_key(VK_RETURN as u32, true, false, false),
+			shortcut_action_for_key(VK_RETURN as u32, true, false, false, false),
 			Some(Action::LaunchWezterm { local: false })
 		);
 		assert_eq!(
-			shortcut_action_for_key(VK_RETURN as u32, true, false, true),
+			shortcut_action_for_key(VK_RETURN as u32, true, false, false, true),
 			Some(Action::LaunchWezterm { local: true })
 		);
 	}
 
 	#[test]
-	fn ctrl_or_alt_blocks_shortcut_dispatch() {
+	fn ctrl_or_alt_block_other_shortcuts() {
 		assert_eq!(
-			shortcut_action_for_key(b'2' as u32, true, true, false),
+			shortcut_action_for_key(b'2' as u32, true, true, false, false),
 			None
 		);
 		assert_eq!(
-			shortcut_action_for_key(VK_OEM_3 as u32, true, true, false),
+			shortcut_action_for_key(VK_OEM_3 as u32, true, true, false, false),
 			None
 		);
 		assert_eq!(
-			shortcut_action_for_key(VK_Q as u32, false, false, false),
+			shortcut_action_for_key(VK_Q as u32, false, false, false, false),
 			None
 		);
 		assert_eq!(
-			shortcut_action_for_key(VK_LEFT as u32, true, true, false),
+			shortcut_action_for_key(VK_LEFT as u32, true, true, false, false),
+			None
+		);
+		assert_eq!(
+			shortcut_action_for_key(VK_LEFT as u32, true, false, true, true),
 			None
 		);
 	}
