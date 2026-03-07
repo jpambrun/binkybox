@@ -1,5 +1,6 @@
 use windows_sys::Win32::{
 	Foundation::{HWND, RECT},
+	Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS},
 	Graphics::Gdi::{
 		GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 	},
@@ -63,27 +64,32 @@ pub(crate) fn snap_active_window(direction: SnapDirection) -> bool {
 		Some(rect) => rect,
 		None => return false,
 	};
-	let current = match window_rect(hwnd) {
+	let outer_rect = match window_rect(hwnd) {
 		Some(rect) => rect,
 		None => return false,
 	};
-	let target = target_rect_for_direction(
-		classify_rect(current, work_area),
+	let visible_rect = visible_window_rect(hwnd).unwrap_or(outer_rect);
+	let target_visible_rect = target_rect_for_direction(
+		classify_rect(visible_rect, work_area),
 		direction,
 		work_area,
 	);
 
-	if current == target {
+	if rect_matches(visible_rect, target_visible_rect, SNAP_TOLERANCE_PX) {
 		return true;
 	}
+
+	let frame_insets = frame_insets(outer_rect, visible_rect);
+	let target_outer_rect =
+		outer_rect_for_visible_target(target_visible_rect, frame_insets);
 
 	unsafe {
 		MoveWindow(
 			hwnd,
-			target.left,
-			target.top,
-			target.width(),
-			target.height(),
+			target_outer_rect.left,
+			target_outer_rect.top,
+			target_outer_rect.width(),
+			target_outer_rect.height(),
 			1,
 		) != 0
 	}
@@ -135,6 +141,27 @@ fn window_rect(hwnd: HWND) -> Option<SnapRect> {
 	};
 	unsafe {
 		if GetWindowRect(hwnd, &mut rect) == 0 {
+			return None;
+		}
+	}
+	Some(SnapRect::from(rect))
+}
+
+fn visible_window_rect(hwnd: HWND) -> Option<SnapRect> {
+	let mut rect = RECT {
+		left: 0,
+		top: 0,
+		right: 0,
+		bottom: 0,
+	};
+	unsafe {
+		let hr = DwmGetWindowAttribute(
+			hwnd,
+			DWMWA_EXTENDED_FRAME_BOUNDS as u32,
+			(&mut rect as *mut RECT).cast(),
+			std::mem::size_of::<RECT>() as u32,
+		);
+		if hr < 0 {
 			return None;
 		}
 	}
@@ -199,6 +226,35 @@ fn rect_matches(actual: SnapRect, expected: SnapRect, tolerance: i32) -> bool {
 		&& (actual.top - expected.top).abs() <= tolerance
 		&& (actual.right - expected.right).abs() <= tolerance
 		&& (actual.bottom - expected.bottom).abs() <= tolerance
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FrameInsets {
+	left: i32,
+	top: i32,
+	right: i32,
+	bottom: i32,
+}
+
+fn frame_insets(outer_rect: SnapRect, visible_rect: SnapRect) -> FrameInsets {
+	FrameInsets {
+		left: visible_rect.left - outer_rect.left,
+		top: visible_rect.top - outer_rect.top,
+		right: outer_rect.right - visible_rect.right,
+		bottom: outer_rect.bottom - visible_rect.bottom,
+	}
+}
+
+fn outer_rect_for_visible_target(
+	target_visible_rect: SnapRect,
+	frame_insets: FrameInsets,
+) -> SnapRect {
+	SnapRect {
+		left: target_visible_rect.left - frame_insets.left,
+		top: target_visible_rect.top - frame_insets.top,
+		right: target_visible_rect.right + frame_insets.right,
+		bottom: target_visible_rect.bottom + frame_insets.bottom,
+	}
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -373,6 +429,38 @@ mod tests {
 		assert_eq!(
 			classify_rect(layout.top_left, work_area),
 			SnapState::TopLeft
+		);
+	}
+
+	#[test]
+	fn frame_insets_capture_invisible_borders() {
+		let outer = rect(-8, 0, 108, 88);
+		let visible = rect(0, 0, 100, 80);
+		assert_eq!(
+			frame_insets(outer, visible),
+			FrameInsets {
+				left: 8,
+				top: 0,
+				right: 8,
+				bottom: 8,
+			}
+		);
+	}
+
+	#[test]
+	fn target_outer_rect_expands_visible_target_by_frame_insets() {
+		let target_visible = rect(0, 0, 100, 80);
+		assert_eq!(
+			outer_rect_for_visible_target(
+				target_visible,
+				FrameInsets {
+					left: 8,
+					top: 0,
+					right: 8,
+					bottom: 8,
+				}
+			),
+			rect(-8, 0, 108, 88)
 		);
 	}
 
