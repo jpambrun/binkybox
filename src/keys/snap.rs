@@ -195,24 +195,32 @@ fn target_rect_for_direction(
 	let layout = SnapLayout::new(work_area);
 	match direction {
 		SnapDirection::Left => match state {
+			SnapState::TopRight => layout.top_left,
+			SnapState::BottomRight => layout.bottom_left,
 			SnapState::TopHalf => layout.top_left,
 			SnapState::BottomHalf => layout.bottom_left,
 			SnapState::TopLeft | SnapState::BottomLeft => layout.left_half,
 			_ => layout.left_half,
 		},
 		SnapDirection::Right => match state {
+			SnapState::TopLeft => layout.top_right,
+			SnapState::BottomLeft => layout.bottom_right,
 			SnapState::TopHalf => layout.top_right,
 			SnapState::BottomHalf => layout.bottom_right,
 			SnapState::TopRight | SnapState::BottomRight => layout.right_half,
 			_ => layout.right_half,
 		},
 		SnapDirection::Up => match state {
+			SnapState::BottomLeft => layout.top_left,
+			SnapState::BottomRight => layout.top_right,
 			SnapState::LeftHalf => layout.top_left,
 			SnapState::RightHalf => layout.top_right,
 			SnapState::TopLeft | SnapState::TopRight => layout.top_half,
 			_ => layout.top_half,
 		},
 		SnapDirection::Down => match state {
+			SnapState::TopLeft => layout.bottom_left,
+			SnapState::TopRight => layout.bottom_right,
 			SnapState::LeftHalf => layout.bottom_left,
 			SnapState::RightHalf => layout.bottom_right,
 			SnapState::BottomLeft | SnapState::BottomRight => layout.bottom_half,
@@ -514,6 +522,22 @@ mod tests {
 			),
 			layout.right_half
 		);
+		assert_eq!(
+			target_rect_for_direction(
+				SnapState::TopRight,
+				SnapDirection::Left,
+				work_area
+			),
+			layout.top_left
+		);
+		assert_eq!(
+			target_rect_for_direction(
+				SnapState::BottomLeft,
+				SnapDirection::Right,
+				work_area
+			),
+			layout.bottom_right
+		);
 	}
 
 	#[test]
@@ -543,6 +567,22 @@ mod tests {
 				work_area
 			),
 			layout.bottom_half
+		);
+		assert_eq!(
+			target_rect_for_direction(
+				SnapState::TopRight,
+				SnapDirection::Down,
+				work_area
+			),
+			layout.bottom_right
+		);
+		assert_eq!(
+			target_rect_for_direction(
+				SnapState::BottomLeft,
+				SnapDirection::Up,
+				work_area
+			),
+			layout.top_left
 		);
 	}
 }
