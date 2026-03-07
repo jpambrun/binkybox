@@ -21,21 +21,25 @@ use windows_sys::Win32::{
 static PRUNE_GRACE_DESKTOP: Mutex<Option<(u32, Instant)>> = Mutex::new(None);
 static PREVIOUS_DESKTOP: Mutex<Option<u32>> = Mutex::new(None);
 
-pub(crate) fn target_desktop_for_shortcut(shortcut_desktop: u32) -> u32 {
+pub(crate) fn previous_desktop_target() -> Option<u32> {
 	let current_index =
 		match winvd::get_current_desktop().and_then(|desktop| desktop.get_index()) {
 			Ok(index) => index,
-			Err(_) => return shortcut_desktop,
+			Err(_) => return None,
 		};
-	if current_index != shortcut_desktop {
-		return shortcut_desktop;
-	}
 	match PREVIOUS_DESKTOP.lock() {
-		Ok(guard) => match *guard {
-			Some(previous) if previous != current_index => previous,
-			_ => shortcut_desktop,
-		},
-		Err(_) => shortcut_desktop,
+		Ok(guard) => resolve_previous_desktop_target(current_index, *guard),
+		Err(_) => None,
+	}
+}
+
+fn resolve_previous_desktop_target(
+	current_desktop: u32,
+	previous_desktop: Option<u32>,
+) -> Option<u32> {
+	match previous_desktop {
+		Some(previous) if previous != current_desktop => Some(previous),
+		_ => None,
 	}
 }
 
@@ -320,5 +324,25 @@ pub(crate) fn switch_to_desktop(desktop: u32, tries: u8, moved_window: Option<HW
 				}
 			},
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::resolve_previous_desktop_target;
+
+	#[test]
+	fn previous_desktop_target_is_none_without_previous() {
+		assert_eq!(resolve_previous_desktop_target(2, None), None);
+	}
+
+	#[test]
+	fn previous_desktop_target_is_none_when_previous_matches_current() {
+		assert_eq!(resolve_previous_desktop_target(2, Some(2)), None);
+	}
+
+	#[test]
+	fn previous_desktop_target_returns_previous_when_distinct() {
+		assert_eq!(resolve_previous_desktop_target(2, Some(1)), Some(1));
 	}
 }

@@ -6,12 +6,13 @@ use std::thread;
 use crate::logging::log_error;
 
 use super::desktop::{
-	active_window_for_move, switch_to_desktop, target_desktop_for_shortcut,
+	active_window_for_move, previous_desktop_target, switch_to_desktop,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Action {
 	SwitchDesktop { desktop: u32, move_window: bool },
+	TogglePreviousDesktop { move_window: bool },
 	LaunchWezterm { local: bool },
 	Quit,
 }
@@ -38,11 +39,17 @@ pub(crate) fn start_action_worker() {
 					} else {
 						None
 					};
-					switch_to_desktop(
-						target_desktop_for_shortcut(desktop),
-						0,
-						moved_window,
-					);
+					switch_to_desktop(desktop, 0, moved_window);
+				}
+				Action::TogglePreviousDesktop { move_window } => {
+					let moved_window = if move_window {
+						active_window_for_move()
+					} else {
+						None
+					};
+					if let Some(desktop) = previous_desktop_target() {
+						switch_to_desktop(desktop, 0, moved_window);
+					}
 				}
 				Action::LaunchWezterm { local } => {
 					if local {
@@ -56,7 +63,10 @@ pub(crate) fn start_action_worker() {
 				}
 			});
 			if result.is_err() {
-				log_error("keys/actions", "action worker panicked while handling action");
+				log_error(
+					"keys/actions",
+					"action worker panicked while handling action",
+				);
 			}
 		}
 	});
@@ -89,10 +99,7 @@ fn launch_wezterm(domain: &str) {
 	{
 		log_error(
 			"keys/actions",
-			&format!(
-				"failed to launch wezterm for domain '{}': {}",
-				domain, err
-			),
+			&format!("failed to launch wezterm for domain '{}': {}", domain, err),
 		);
 	}
 }

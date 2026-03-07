@@ -6,7 +6,7 @@ use windows_sys::Win32::{
 	UI::{
 		Input::KeyboardAndMouse::{
 			keybd_event, KEYEVENTF_KEYUP, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN,
-			VK_Q, VK_RCONTROL, VK_RETURN, VK_RMENU, VK_RSHIFT, VK_RWIN,
+			VK_OEM_3, VK_Q, VK_RCONTROL, VK_RETURN, VK_RMENU, VK_RSHIFT, VK_RWIN,
 		},
 		WindowsAndMessaging::{
 			CallNextHookEx, GetMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
@@ -153,12 +153,8 @@ unsafe extern "system" fn low_level_keyboard_proc(
 
 fn handle_keydown(vk: u32) -> bool {
 	let win_down = is_win_modifier_down();
-	let action = shortcut_action_for_key(
-		vk,
-		win_down,
-		is_ctrl_or_alt_down(),
-		is_shift_down(),
-	);
+	let action =
+		shortcut_action_for_key(vk, win_down, is_ctrl_or_alt_down(), is_shift_down());
 	action.is_some_and(dispatch_action)
 }
 
@@ -176,6 +172,12 @@ fn shortcut_action_for_key(
 		let desktop = vk - b'1' as u32;
 		return Some(Action::SwitchDesktop {
 			desktop,
+			move_window: shift_down,
+		});
+	}
+
+	if vk == VK_OEM_3 as u32 {
+		return Some(Action::TogglePreviousDesktop {
 			move_window: shift_down,
 		});
 	}
@@ -270,6 +272,18 @@ mod tests {
 	}
 
 	#[test]
+	fn tilde_shortcuts_toggle_previous_desktop_and_shift_moves() {
+		assert_eq!(
+			shortcut_action_for_key(VK_OEM_3 as u32, true, false, false),
+			Some(Action::TogglePreviousDesktop { move_window: false })
+		);
+		assert_eq!(
+			shortcut_action_for_key(VK_OEM_3 as u32, true, false, true),
+			Some(Action::TogglePreviousDesktop { move_window: true })
+		);
+	}
+
+	#[test]
 	fn enter_shortcut_uses_shift_for_local_domain_choice() {
 		assert_eq!(
 			shortcut_action_for_key(VK_RETURN as u32, true, false, false),
@@ -285,6 +299,10 @@ mod tests {
 	fn ctrl_or_alt_blocks_shortcut_dispatch() {
 		assert_eq!(
 			shortcut_action_for_key(b'2' as u32, true, true, false),
+			None
+		);
+		assert_eq!(
+			shortcut_action_for_key(VK_OEM_3 as u32, true, true, false),
 			None
 		);
 		assert_eq!(
