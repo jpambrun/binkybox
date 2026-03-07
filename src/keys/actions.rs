@@ -6,13 +6,17 @@ use std::thread;
 use crate::logging::log_error;
 
 use super::desktop::{
-	active_window_for_move, previous_desktop_target, switch_to_desktop,
+	active_window_for_move, adjacent_desktop_target, previous_desktop_target,
+	switch_to_desktop,
 };
+use super::snap::{self, SnapDirection};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Action {
 	SwitchDesktop { desktop: u32, move_window: bool },
 	TogglePreviousDesktop { move_window: bool },
+	SnapWindow { direction: SnapDirection },
+	MoveWindowToAdjacentDesktop { delta: i32 },
 	LaunchWezterm { local: bool },
 	Quit,
 }
@@ -49,6 +53,14 @@ pub(crate) fn start_action_worker() {
 					};
 					if let Some(desktop) = previous_desktop_target() {
 						switch_to_desktop(desktop, 0, moved_window);
+					}
+				}
+				Action::SnapWindow { direction } => {
+					let _ = snap::snap_active_window(direction);
+				}
+				Action::MoveWindowToAdjacentDesktop { delta } => {
+					if let Some(desktop) = adjacent_desktop_target(delta) {
+						switch_to_desktop(desktop, 0, active_window_for_move());
 					}
 				}
 				Action::LaunchWezterm { local } => {

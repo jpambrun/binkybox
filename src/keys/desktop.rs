@@ -21,6 +21,15 @@ use windows_sys::Win32::{
 static PRUNE_GRACE_DESKTOP: Mutex<Option<(u32, Instant)>> = Mutex::new(None);
 static PREVIOUS_DESKTOP: Mutex<Option<u32>> = Mutex::new(None);
 
+pub(crate) fn adjacent_desktop_target(delta: i32) -> Option<u32> {
+	let current_index =
+		match winvd::get_current_desktop().and_then(|desktop| desktop.get_index()) {
+			Ok(index) => index,
+			Err(_) => return None,
+		};
+	resolve_adjacent_desktop_target(current_index, delta)
+}
+
 pub(crate) fn previous_desktop_target() -> Option<u32> {
 	let current_index =
 		match winvd::get_current_desktop().and_then(|desktop| desktop.get_index()) {
@@ -41,6 +50,14 @@ fn resolve_previous_desktop_target(
 		Some(previous) if previous != current_desktop => Some(previous),
 		_ => None,
 	}
+}
+
+fn resolve_adjacent_desktop_target(current_desktop: u32, delta: i32) -> Option<u32> {
+	let target = current_desktop as i64 + delta as i64;
+	if target < 0 {
+		return None;
+	}
+	u32::try_from(target).ok()
 }
 
 pub(crate) fn active_window_for_move() -> Option<HWND> {
@@ -329,7 +346,7 @@ pub(crate) fn switch_to_desktop(desktop: u32, tries: u8, moved_window: Option<HW
 
 #[cfg(test)]
 mod tests {
-	use super::resolve_previous_desktop_target;
+	use super::{resolve_adjacent_desktop_target, resolve_previous_desktop_target};
 
 	#[test]
 	fn previous_desktop_target_is_none_without_previous() {
@@ -344,5 +361,20 @@ mod tests {
 	#[test]
 	fn previous_desktop_target_returns_previous_when_distinct() {
 		assert_eq!(resolve_previous_desktop_target(2, Some(1)), Some(1));
+	}
+
+	#[test]
+	fn adjacent_desktop_target_has_no_previous_before_zero() {
+		assert_eq!(resolve_adjacent_desktop_target(0, -1), None);
+	}
+
+	#[test]
+	fn adjacent_desktop_target_can_move_forward_from_zero() {
+		assert_eq!(resolve_adjacent_desktop_target(0, 1), Some(1));
+	}
+
+	#[test]
+	fn adjacent_desktop_target_can_move_back_from_nonzero() {
+		assert_eq!(resolve_adjacent_desktop_target(3, -1), Some(2));
 	}
 }

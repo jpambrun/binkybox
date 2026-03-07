@@ -5,8 +5,9 @@ use windows_sys::Win32::{
 	Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM},
 	UI::{
 		Input::KeyboardAndMouse::{
-			keybd_event, KEYEVENTF_KEYUP, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN,
-			VK_OEM_3, VK_Q, VK_RCONTROL, VK_RETURN, VK_RMENU, VK_RSHIFT, VK_RWIN,
+			keybd_event, KEYEVENTF_KEYUP, VK_DOWN, VK_LCONTROL, VK_LEFT, VK_LMENU,
+			VK_LSHIFT, VK_LWIN, VK_OEM_3, VK_Q, VK_RCONTROL, VK_RETURN, VK_RIGHT,
+			VK_RMENU, VK_RSHIFT, VK_RWIN, VK_UP,
 		},
 		WindowsAndMessaging::{
 			CallNextHookEx, GetMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
@@ -19,6 +20,7 @@ use windows_sys::Win32::{
 use super::actions::{dispatch_action, Action};
 use super::drag;
 use super::mouse_hook;
+use super::snap::SnapDirection;
 use super::{key_is_down, KEYDOWN_STATE};
 
 static KEYBOARD_HOOK: Mutex<isize> = Mutex::new(0);
@@ -182,6 +184,31 @@ fn shortcut_action_for_key(
 		});
 	}
 
+	if !shift_down {
+		let direction = match vk {
+			value if value == VK_LEFT as u32 => Some(SnapDirection::Left),
+			value if value == VK_RIGHT as u32 => Some(SnapDirection::Right),
+			value if value == VK_UP as u32 => Some(SnapDirection::Up),
+			value if value == VK_DOWN as u32 => Some(SnapDirection::Down),
+			_ => None,
+		};
+		if let Some(direction) = direction {
+			return Some(Action::SnapWindow { direction });
+		}
+	}
+
+	if shift_down {
+		match vk {
+			value if value == VK_LEFT as u32 => {
+				return Some(Action::MoveWindowToAdjacentDesktop { delta: -1 });
+			}
+			value if value == VK_RIGHT as u32 => {
+				return Some(Action::MoveWindowToAdjacentDesktop { delta: 1 });
+			}
+			_ => {}
+		}
+	}
+
 	if vk == VK_RETURN as u32 {
 		return Some(Action::LaunchWezterm { local: shift_down });
 	}
@@ -284,6 +311,58 @@ mod tests {
 	}
 
 	#[test]
+	fn plain_arrow_shortcuts_map_to_snap_actions() {
+		assert_eq!(
+			shortcut_action_for_key(VK_LEFT as u32, true, false, false),
+			Some(Action::SnapWindow {
+				direction: SnapDirection::Left,
+			})
+		);
+		assert_eq!(
+			shortcut_action_for_key(VK_RIGHT as u32, true, false, false),
+			Some(Action::SnapWindow {
+				direction: SnapDirection::Right,
+			})
+		);
+		assert_eq!(
+			shortcut_action_for_key(VK_UP as u32, true, false, false),
+			Some(Action::SnapWindow {
+				direction: SnapDirection::Up,
+			})
+		);
+		assert_eq!(
+			shortcut_action_for_key(VK_DOWN as u32, true, false, false),
+			Some(Action::SnapWindow {
+				direction: SnapDirection::Down,
+			})
+		);
+	}
+
+	#[test]
+	fn shift_left_right_move_window_to_adjacent_desktops() {
+		assert_eq!(
+			shortcut_action_for_key(VK_LEFT as u32, true, false, true),
+			Some(Action::MoveWindowToAdjacentDesktop { delta: -1 })
+		);
+		assert_eq!(
+			shortcut_action_for_key(VK_RIGHT as u32, true, false, true),
+			Some(Action::MoveWindowToAdjacentDesktop { delta: 1 })
+		);
+	}
+
+	#[test]
+	fn shift_up_down_remain_native() {
+		assert_eq!(
+			shortcut_action_for_key(VK_UP as u32, true, false, true),
+			None
+		);
+		assert_eq!(
+			shortcut_action_for_key(VK_DOWN as u32, true, false, true),
+			None
+		);
+	}
+
+	#[test]
 	fn enter_shortcut_uses_shift_for_local_domain_choice() {
 		assert_eq!(
 			shortcut_action_for_key(VK_RETURN as u32, true, false, false),
@@ -307,6 +386,10 @@ mod tests {
 		);
 		assert_eq!(
 			shortcut_action_for_key(VK_Q as u32, false, false, false),
+			None
+		);
+		assert_eq!(
+			shortcut_action_for_key(VK_LEFT as u32, true, true, false),
 			None
 		);
 	}

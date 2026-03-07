@@ -26,6 +26,7 @@ A "binky" is a word for [a kind of happy hop that bunnies do](https://www.youtub
 
 - Hop from one virtual desktop to another _directly_ using incredible keyboard shortcuts.
 - Jump back to the previous desktop with `Win+~`, or move the active window there with `Win+Shift+~`.
+- Snap the active window into halves and quadrants with custom `Win+Arrow` behavior that never maximizes or minimizes.
 - See which virtual desktop you're on right now via a system tray icon.
 - Written in Rust, leading to very low (almost nonexistent) background resource usage.
 
@@ -69,6 +70,8 @@ Built-in shortcuts:
 - `Win+Shift+1` through `Win+Shift+9` move the active window to that desktop and switch there.
 - `Win+~` switches to the previous desktop.
 - `Win+Shift+~` moves the active window to the previous desktop and switches there.
+- Plain `Win+Left`, `Win+Right`, `Win+Up`, and `Win+Down` snap the active window into halves and quadrants without using Windows maximize/minimize behavior.
+- `Win+Shift+Left` and `Win+Shift+Right` move the active window to the previous/next virtual desktop and switch there.
 
 Right click the tray icon and open _Settings_ in order to set your own keyboard shortcuts. BinkyBox keyboard shortcuts follow this layout: `MODIFIER+OPTIONAL_MODIFIER+OPTIONAL_MODIFIER+OPTIONAL_MODIFIER+ALPHANUMERIC_CHAR_OR_FKEY`.
 

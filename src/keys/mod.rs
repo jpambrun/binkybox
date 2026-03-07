@@ -6,6 +6,7 @@ mod desktop;
 mod drag;
 mod hook;
 mod mouse_hook;
+mod snap;
 
 use std::sync::Mutex;
 
