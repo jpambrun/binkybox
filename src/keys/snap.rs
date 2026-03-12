@@ -5,7 +5,8 @@ use windows_sys::Win32::{
 		GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 	},
 	UI::WindowsAndMessaging::{
-		GetWindowRect, IsIconic, IsZoomed, MoveWindow, ShowWindow, SW_RESTORE,
+		GetWindowRect, IsIconic, IsZoomed, MoveWindow, ShowWindow, SW_MAXIMIZE,
+		SW_RESTORE,
 	},
 };
 
@@ -24,6 +25,7 @@ pub(crate) enum SnapDirection {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SnapState {
 	Other,
+	Maximized,
 	LeftHalf,
 	RightHalf,
 	TopHalf,
@@ -42,6 +44,12 @@ struct SnapRect {
 	bottom: i32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TargetWindowState {
+	Rect(SnapRect),
+	Maximized,
+}
+
 impl SnapRect {
 	fn width(self) -> i32 {
 		self.right - self.left
@@ -58,6 +66,10 @@ pub(crate) fn snap_active_window(direction: SnapDirection) -> bool {
 		None => return false,
 	};
 
+	let was_maximized = is_maximized(hwnd);
+	if was_maximized && matches!(direction, SnapDirection::Up) {
+		return true;
+	}
 	restore_window_if_needed(hwnd);
 
 	let work_area = match monitor_work_area(hwnd) {
@@ -69,29 +81,34 @@ pub(crate) fn snap_active_window(direction: SnapDirection) -> bool {
 		None => return false,
 	};
 	let visible_rect = visible_window_rect(hwnd).unwrap_or(outer_rect);
-	let target_visible_rect = target_rect_for_direction(
-		classify_rect(visible_rect, work_area),
-		direction,
-		work_area,
-	);
+	let state = if was_maximized {
+		SnapState::Maximized
+	} else {
+		classify_rect(visible_rect, work_area)
+	};
 
-	if rect_matches(visible_rect, target_visible_rect, SNAP_TOLERANCE_PX) {
-		return true;
-	}
+	match target_state_for_direction(state, direction, work_area) {
+		TargetWindowState::Maximized => unsafe { ShowWindow(hwnd, SW_MAXIMIZE) != 0 },
+		TargetWindowState::Rect(target_visible_rect) => {
+			if rect_matches(visible_rect, target_visible_rect, SNAP_TOLERANCE_PX) {
+				return true;
+			}
 
-	let frame_insets = frame_insets(outer_rect, visible_rect);
-	let target_outer_rect =
-		outer_rect_for_visible_target(target_visible_rect, frame_insets);
+			let frame_insets = frame_insets(outer_rect, visible_rect);
+			let target_outer_rect =
+				outer_rect_for_visible_target(target_visible_rect, frame_insets);
 
-	unsafe {
-		MoveWindow(
-			hwnd,
-			target_outer_rect.left,
-			target_outer_rect.top,
-			target_outer_rect.width(),
-			target_outer_rect.height(),
-			1,
-		) != 0
+			unsafe {
+				MoveWindow(
+					hwnd,
+					target_outer_rect.left,
+					target_outer_rect.top,
+					target_outer_rect.width(),
+					target_outer_rect.height(),
+					1,
+				) != 0
+			}
+		}
 	}
 }
 
@@ -101,6 +118,10 @@ fn restore_window_if_needed(hwnd: HWND) {
 			let _ = ShowWindow(hwnd, SW_RESTORE);
 		}
 	}
+}
+
+fn is_maximized(hwnd: HWND) -> bool {
+	unsafe { IsZoomed(hwnd) != 0 }
 }
 
 fn monitor_work_area(hwnd: HWND) -> Option<SnapRect> {
@@ -187,45 +208,52 @@ fn classify_rect(rect: SnapRect, work_area: SnapRect) -> SnapState {
 	SnapState::Other
 }
 
-fn target_rect_for_direction(
+fn target_state_for_direction(
 	state: SnapState,
 	direction: SnapDirection,
 	work_area: SnapRect,
-) -> SnapRect {
+) -> TargetWindowState {
 	let layout = SnapLayout::new(work_area);
 	match direction {
-		SnapDirection::Left => match state {
+		SnapDirection::Left => TargetWindowState::Rect(match state {
+			SnapState::Maximized => layout.left_half,
 			SnapState::TopRight => layout.top_left,
 			SnapState::BottomRight => layout.bottom_left,
 			SnapState::TopHalf => layout.top_left,
 			SnapState::BottomHalf => layout.bottom_left,
 			SnapState::TopLeft | SnapState::BottomLeft => layout.left_half,
 			_ => layout.left_half,
-		},
-		SnapDirection::Right => match state {
+		}),
+		SnapDirection::Right => TargetWindowState::Rect(match state {
+			SnapState::Maximized => layout.right_half,
 			SnapState::TopLeft => layout.top_right,
 			SnapState::BottomLeft => layout.bottom_right,
 			SnapState::TopHalf => layout.top_right,
 			SnapState::BottomHalf => layout.bottom_right,
 			SnapState::TopRight | SnapState::BottomRight => layout.right_half,
 			_ => layout.right_half,
-		},
+		}),
 		SnapDirection::Up => match state {
-			SnapState::BottomLeft => layout.top_left,
-			SnapState::BottomRight => layout.top_right,
-			SnapState::LeftHalf => layout.top_left,
-			SnapState::RightHalf => layout.top_right,
-			SnapState::TopLeft | SnapState::TopRight => layout.top_half,
-			_ => layout.top_half,
+			SnapState::TopHalf => TargetWindowState::Maximized,
+			SnapState::Maximized => TargetWindowState::Maximized,
+			_ => TargetWindowState::Rect(match state {
+				SnapState::BottomLeft => layout.top_left,
+				SnapState::BottomRight => layout.top_right,
+				SnapState::LeftHalf => layout.top_left,
+				SnapState::RightHalf => layout.top_right,
+				SnapState::TopLeft | SnapState::TopRight => layout.top_half,
+				_ => layout.top_half,
+			}),
 		},
-		SnapDirection::Down => match state {
+		SnapDirection::Down => TargetWindowState::Rect(match state {
+			SnapState::Maximized => layout.top_half,
 			SnapState::TopLeft => layout.bottom_left,
 			SnapState::TopRight => layout.bottom_right,
 			SnapState::LeftHalf => layout.bottom_left,
 			SnapState::RightHalf => layout.bottom_right,
 			SnapState::BottomLeft | SnapState::BottomRight => layout.bottom_half,
 			_ => layout.bottom_half,
-		},
+		}),
 	}
 }
 
@@ -477,20 +505,20 @@ mod tests {
 		let work_area = rect(0, 0, 100, 80);
 		let layout = SnapLayout::new(work_area);
 		assert_eq!(
-			target_rect_for_direction(SnapState::Other, SnapDirection::Left, work_area),
-			layout.left_half
+			target_state_for_direction(SnapState::Other, SnapDirection::Left, work_area),
+			TargetWindowState::Rect(layout.left_half)
 		);
 		assert_eq!(
-			target_rect_for_direction(SnapState::Other, SnapDirection::Right, work_area),
-			layout.right_half
+			target_state_for_direction(SnapState::Other, SnapDirection::Right, work_area),
+			TargetWindowState::Rect(layout.right_half)
 		);
 		assert_eq!(
-			target_rect_for_direction(SnapState::Other, SnapDirection::Up, work_area),
-			layout.top_half
+			target_state_for_direction(SnapState::Other, SnapDirection::Up, work_area),
+			TargetWindowState::Rect(layout.top_half)
 		);
 		assert_eq!(
-			target_rect_for_direction(SnapState::Other, SnapDirection::Down, work_area),
-			layout.bottom_half
+			target_state_for_direction(SnapState::Other, SnapDirection::Down, work_area),
+			TargetWindowState::Rect(layout.bottom_half)
 		);
 	}
 
@@ -499,44 +527,44 @@ mod tests {
 		let work_area = rect(0, 0, 100, 80);
 		let layout = SnapLayout::new(work_area);
 		assert_eq!(
-			target_rect_for_direction(SnapState::TopHalf, SnapDirection::Left, work_area),
-			layout.top_left
+			target_state_for_direction(SnapState::TopHalf, SnapDirection::Left, work_area),
+			TargetWindowState::Rect(layout.top_left)
 		);
 		assert_eq!(
-			target_rect_for_direction(
+			target_state_for_direction(
 				SnapState::BottomHalf,
 				SnapDirection::Right,
 				work_area
 			),
-			layout.bottom_right
+			TargetWindowState::Rect(layout.bottom_right)
 		);
 		assert_eq!(
-			target_rect_for_direction(SnapState::TopLeft, SnapDirection::Left, work_area),
-			layout.left_half
+			target_state_for_direction(SnapState::TopLeft, SnapDirection::Left, work_area),
+			TargetWindowState::Rect(layout.left_half)
 		);
 		assert_eq!(
-			target_rect_for_direction(
+			target_state_for_direction(
 				SnapState::BottomRight,
 				SnapDirection::Right,
 				work_area
 			),
-			layout.right_half
+			TargetWindowState::Rect(layout.right_half)
 		);
 		assert_eq!(
-			target_rect_for_direction(
+			target_state_for_direction(
 				SnapState::TopRight,
 				SnapDirection::Left,
 				work_area
 			),
-			layout.top_left
+			TargetWindowState::Rect(layout.top_left)
 		);
 		assert_eq!(
-			target_rect_for_direction(
+			target_state_for_direction(
 				SnapState::BottomLeft,
 				SnapDirection::Right,
 				work_area
 			),
-			layout.bottom_right
+			TargetWindowState::Rect(layout.bottom_right)
 		);
 	}
 
@@ -545,44 +573,75 @@ mod tests {
 		let work_area = rect(0, 0, 100, 80);
 		let layout = SnapLayout::new(work_area);
 		assert_eq!(
-			target_rect_for_direction(SnapState::LeftHalf, SnapDirection::Up, work_area),
-			layout.top_left
+			target_state_for_direction(SnapState::LeftHalf, SnapDirection::Up, work_area),
+			TargetWindowState::Rect(layout.top_left)
 		);
 		assert_eq!(
-			target_rect_for_direction(
+			target_state_for_direction(
 				SnapState::RightHalf,
 				SnapDirection::Down,
 				work_area
 			),
-			layout.bottom_right
+			TargetWindowState::Rect(layout.bottom_right)
 		);
 		assert_eq!(
-			target_rect_for_direction(SnapState::TopLeft, SnapDirection::Up, work_area),
-			layout.top_half
+			target_state_for_direction(SnapState::TopLeft, SnapDirection::Up, work_area),
+			TargetWindowState::Rect(layout.top_half)
 		);
 		assert_eq!(
-			target_rect_for_direction(
+			target_state_for_direction(
 				SnapState::BottomRight,
 				SnapDirection::Down,
 				work_area
 			),
-			layout.bottom_half
+			TargetWindowState::Rect(layout.bottom_half)
 		);
 		assert_eq!(
-			target_rect_for_direction(
+			target_state_for_direction(
 				SnapState::TopRight,
 				SnapDirection::Down,
 				work_area
 			),
-			layout.bottom_right
+			TargetWindowState::Rect(layout.bottom_right)
 		);
 		assert_eq!(
-			target_rect_for_direction(
+			target_state_for_direction(
 				SnapState::BottomLeft,
 				SnapDirection::Up,
 				work_area
 			),
-			layout.top_left
+			TargetWindowState::Rect(layout.top_left)
+		);
+	}
+
+	#[test]
+	fn up_from_top_half_maximizes() {
+		let work_area = rect(0, 0, 100, 80);
+		assert_eq!(
+			target_state_for_direction(SnapState::TopHalf, SnapDirection::Up, work_area),
+			TargetWindowState::Maximized
+		);
+	}
+
+	#[test]
+	fn maximized_transitions_back_into_snap_layout() {
+		let work_area = rect(0, 0, 100, 80);
+		let layout = SnapLayout::new(work_area);
+		assert_eq!(
+			target_state_for_direction(SnapState::Maximized, SnapDirection::Left, work_area),
+			TargetWindowState::Rect(layout.left_half)
+		);
+		assert_eq!(
+			target_state_for_direction(SnapState::Maximized, SnapDirection::Right, work_area),
+			TargetWindowState::Rect(layout.right_half)
+		);
+		assert_eq!(
+			target_state_for_direction(SnapState::Maximized, SnapDirection::Up, work_area),
+			TargetWindowState::Rect(layout.top_half)
+		);
+		assert_eq!(
+			target_state_for_direction(SnapState::Maximized, SnapDirection::Down, work_area),
+			TargetWindowState::Rect(layout.top_half)
 		);
 	}
 }
