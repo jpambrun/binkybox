@@ -1,5 +1,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
+use std::sync::OnceLock;
+use std::time::Instant;
 
 use windows_sys::Win32::{
 	Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM},
@@ -24,9 +26,11 @@ use super::snap::SnapDirection;
 use super::{key_is_down, KEYDOWN_STATE};
 
 static KEYBOARD_HOOK: Mutex<isize> = Mutex::new(0);
+static KEYDOWN_TICKS_MS: Mutex<[u64; 256]> = Mutex::new([0; 256]);
 static INTERCEPTED_WIN_KEY: AtomicU32 = AtomicU32::new(0);
 static WIN_COMBO_USED: AtomicBool = AtomicBool::new(false);
 static WIN_NATIVE_PASSTHROUGH: AtomicBool = AtomicBool::new(false);
+const SHORTCUT_CHORD_ROLLOVER_MS: u64 = 150;
 
 pub(crate) fn bind_shortcuts() {
 	unsafe {
@@ -130,12 +134,20 @@ unsafe extern "system" fn low_level_keyboard_proc(
 			}
 			state[vk as usize] = true;
 		}
+		if let Ok(mut ticks) = KEYDOWN_TICKS_MS.lock() {
+			ticks[vk as usize] = monotonic_ms();
+		}
 	}
 
 	if is_win_vk(vk) {
 		INTERCEPTED_WIN_KEY.store(vk, Ordering::Relaxed);
 		WIN_COMBO_USED.store(false, Ordering::Relaxed);
 		WIN_NATIVE_PASSTHROUGH.store(false, Ordering::Relaxed);
+		if let Some(action) = action_for_recently_pressed_key() {
+			if dispatch_action(action) {
+				WIN_COMBO_USED.store(true, Ordering::Relaxed);
+			}
+		}
 		return 1;
 	}
 
@@ -285,6 +297,68 @@ fn should_replay_win_key(dragged: bool, combo_used: bool, intercepted: bool) -> 
 	intercepted && !dragged && !combo_used
 }
 
+fn action_for_recently_pressed_key() -> Option<Action> {
+	let now_ms = monotonic_ms();
+	let pressed_keys = {
+		let state = KEYDOWN_STATE.lock().ok()?;
+		let ticks = KEYDOWN_TICKS_MS.lock().ok()?;
+		state
+			.iter()
+			.zip(ticks.iter())
+			.enumerate()
+			.filter_map(|(vk, (is_down, tick_ms))| {
+				is_down.then_some((vk as u32, *tick_ms))
+			})
+			.collect::<Vec<_>>()
+	};
+
+	// Allow slightly out-of-order chords like Enter-then-Win.
+	most_recent_shortcut_action_from_pressed_keys(
+		pressed_keys.into_iter(),
+		true,
+		is_ctrl_down(),
+		is_alt_down(),
+		is_shift_down(),
+		now_ms,
+	)
+}
+
+fn most_recent_shortcut_action_from_pressed_keys<I>(
+	pressed_keys: I,
+	win_down: bool,
+	ctrl_down: bool,
+	alt_down: bool,
+	shift_down: bool,
+	now_ms: u64,
+) -> Option<Action>
+where
+	I: IntoIterator<Item = (u32, u64)>,
+{
+	let mut candidate: Option<(Action, u64)> = None;
+	for (vk, pressed_at_ms) in pressed_keys {
+		if now_ms.saturating_sub(pressed_at_ms) > SHORTCUT_CHORD_ROLLOVER_MS {
+			continue;
+		}
+		let Some(action) =
+			shortcut_action_for_key(vk, win_down, ctrl_down, alt_down, shift_down)
+		else {
+			continue;
+		};
+		if candidate
+			.as_ref()
+			.is_none_or(|(_, best_pressed_at_ms)| pressed_at_ms > *best_pressed_at_ms)
+		{
+			candidate = Some((action, pressed_at_ms));
+		}
+	}
+	candidate.map(|(action, _)| action)
+}
+
+fn monotonic_ms() -> u64 {
+	static START: OnceLock<Instant> = OnceLock::new();
+	START.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -423,6 +497,45 @@ mod tests {
 		assert_eq!(
 			shortcut_action_for_key(VK_RETURN as u32, true, true, false, false),
 			Some(Action::LaunchWezterm { local: false })
+		);
+	}
+
+	#[test]
+	fn recent_pressed_shortcut_supports_enter_then_win_order() {
+		let action = most_recent_shortcut_action_from_pressed_keys(
+			[(VK_RETURN as u32, 1_000)],
+			true,
+			false,
+			false,
+			false,
+			1_100,
+		);
+		assert_eq!(action, Some(Action::LaunchWezterm { local: false }));
+	}
+
+	#[test]
+	fn recent_pressed_shortcut_honors_shift_and_rollover_window() {
+		assert_eq!(
+			most_recent_shortcut_action_from_pressed_keys(
+				[(VK_RETURN as u32, 1_000)],
+				true,
+				false,
+				false,
+				true,
+				1_100,
+			),
+			Some(Action::LaunchWezterm { local: true })
+		);
+		assert_eq!(
+			most_recent_shortcut_action_from_pressed_keys(
+				[(VK_RETURN as u32, 1_000)],
+				true,
+				false,
+				false,
+				false,
+				1_200,
+			),
+			None
 		);
 	}
 }
