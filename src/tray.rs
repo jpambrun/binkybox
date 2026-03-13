@@ -1,46 +1,59 @@
 /* SPDX-FileCopyrightText: © 2023 Nadim Kobeissi <nadim@symbolic.software>
  * SPDX-License-Identifier: MIT */
 
-use std::sync::mpsc;
+use std::sync::mpsc::{self, Receiver};
+use std::time::Duration;
 
 use tray_item::{IconSource, TrayItem};
 use winvd::DesktopEvent;
+
+use crate::logging::{log_error, log_info};
 
 pub enum TrayMessage {
 	Quit,
 }
 
 pub fn init() {
-	let mut tray = match TrayItem::new("BinkyBox", IconSource::Resource("icon")) {
-		Ok(tray) => tray,
-		Err(err) => {
-			eprintln!("[tray] failed to initialize tray icon: {}", err);
-			return;
-		}
-	};
-
-	let (tx, rx) = mpsc::sync_channel(1);
-	if let Err(err) = tray.add_menu_item("Quit", move || {
-		if tx.send(TrayMessage::Quit).is_err() {
-			eprintln!("[tray] failed to send quit message: channel closed");
-		}
-	}) {
-		eprintln!("[tray] failed to add tray menu item: {}", err);
-		return;
-	}
-
-	tokio::spawn(icon_change_listener(tray));
 	loop {
-		match rx.recv() {
-			Ok(TrayMessage::Quit) => {
-				std::process::exit(0);
+		match create_tray() {
+			Ok((tray, rx)) => {
+				log_info("tray", "tray icon initialized");
+				tokio::spawn(icon_change_listener(tray));
+				match rx.recv() {
+					Ok(TrayMessage::Quit) => {
+						log_info("tray", "quit requested from tray");
+						std::process::exit(0);
+					}
+					Err(err) => {
+						log_error(
+							"tray",
+							&format!("quit channel closed; recreating tray: {}", err),
+						);
+					}
+				}
 			}
 			Err(err) => {
-				eprintln!("[tray] quit channel closed: {}", err);
-				return;
+				log_error(
+					"tray",
+					&format!("failed to initialize tray icon; retrying in 2s: {}", err),
+				);
+				std::thread::sleep(Duration::from_secs(2));
 			}
 		}
 	}
+}
+
+fn create_tray() -> Result<(TrayItem, Receiver<TrayMessage>), String> {
+	let mut tray = TrayItem::new("BinkyBox", IconSource::Resource("icon"))
+		.map_err(|err| err.to_string())?;
+	let (tx, rx) = mpsc::sync_channel(1);
+	tray.add_menu_item("Quit", move || {
+		if tx.send(TrayMessage::Quit).is_err() {
+			log_error("tray", "failed to send quit message: channel closed");
+		}
+	})
+	.map_err(|err| err.to_string())?;
+	Ok((tray, rx))
 }
 
 async fn icon_change_listener(mut tray: TrayItem) {
@@ -51,16 +64,20 @@ async fn icon_change_listener(mut tray: TrayItem) {
 			if let Ok(index) = n.get_index() {
 				if let Some(icon) = icon_resource_for_index(index) {
 					if let Err(err) = tray.set_icon(IconSource::Resource(icon)) {
-						eprintln!(
-							"[tray] failed to update tray icon for desktop {}: {}",
-							index + 1,
-							err
+						log_error(
+							"tray",
+							&format!(
+								"failed to update tray icon for desktop {}: {}",
+								index + 1,
+								err
+							),
 						);
 					}
 				}
 			}
 		}
 	}
+	log_error("tray", "desktop event listener ended");
 }
 
 fn icon_resource_for_index(index: u32) -> Option<&'static str> {

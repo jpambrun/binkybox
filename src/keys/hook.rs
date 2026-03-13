@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use windows_sys::Win32::{
-	Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM},
+	Foundation::{GetLastError, HINSTANCE, LPARAM, LRESULT, WPARAM},
 	UI::{
 		Input::KeyboardAndMouse::{
 			keybd_event, KEYEVENTF_KEYUP, VK_DOWN, VK_LCONTROL, VK_LEFT, VK_LMENU,
@@ -24,6 +24,7 @@ use super::drag;
 use super::mouse_hook;
 use super::snap::SnapDirection;
 use super::{key_is_down, KEYDOWN_STATE};
+use crate::logging::{log_error, log_info};
 
 static KEYBOARD_HOOK: Mutex<isize> = Mutex::new(0);
 static KEYDOWN_TICKS_MS: Mutex<[u64; 256]> = Mutex::new([0; 256]);
@@ -43,9 +44,16 @@ pub(crate) fn bind_shortcuts() {
 					0,
 				);
 				if hook.is_null() {
-					eprintln!("[keys/hook] failed to install keyboard hook");
+					log_error(
+						"keys/hook",
+						&format!(
+							"failed to install keyboard hook: win32 error {}",
+							GetLastError()
+						),
+					);
 				} else {
 					*hook_guard = hook as isize;
+					log_info("keys/hook", "keyboard hook installed");
 				}
 			}
 		}
@@ -55,7 +63,24 @@ pub(crate) fn bind_shortcuts() {
 pub(crate) fn keyboard_event_loop() {
 	unsafe {
 		let mut msg: MSG = std::mem::zeroed();
-		while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {}
+		loop {
+			let status = GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0);
+			if status > 0 {
+				continue;
+			}
+			if status == 0 {
+				log_info("keys/hook", "keyboard event loop received WM_QUIT");
+			} else {
+				log_error(
+					"keys/hook",
+					&format!(
+						"keyboard event loop failed: GetMessageW returned -1, win32 error {}",
+						GetLastError()
+					),
+				);
+			}
+			break;
+		}
 		mouse_hook::unbind_mouse_hook();
 		if let Ok(mut hook_guard) = KEYBOARD_HOOK.lock() {
 			if *hook_guard != 0 {

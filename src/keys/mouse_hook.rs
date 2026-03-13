@@ -4,7 +4,7 @@ use std::thread;
 use std::time::Duration;
 
 use windows_sys::Win32::{
-	Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
+	Foundation::{GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
 	UI::{
 		Input::KeyboardAndMouse::VK_LWIN,
 		WindowsAndMessaging::{
@@ -18,6 +18,7 @@ use windows_sys::Win32::{
 use super::desktop::draggable_window_from_point;
 use super::drag;
 use super::key_is_down;
+use crate::logging::{log_error, log_info};
 
 static MOUSE_HOOK: Mutex<isize> = Mutex::new(0);
 static MOVE_WORKER_STARTED: OnceLock<()> = OnceLock::new();
@@ -45,9 +46,16 @@ pub(crate) fn bind_mouse_hook() {
 					0,
 				);
 				if hook.is_null() {
-					eprintln!("[keys/mouse] failed to install mouse hook");
+					log_error(
+						"keys/mouse",
+						&format!(
+							"failed to install mouse hook: win32 error {}",
+							GetLastError()
+						),
+					);
 				} else {
 					*hook_guard = hook as isize;
+					log_info("keys/mouse", "mouse hook installed");
 				}
 			}
 		}

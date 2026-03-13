@@ -527,7 +527,11 @@ mod tests {
 		let work_area = rect(0, 0, 100, 80);
 		let layout = SnapLayout::new(work_area);
 		assert_eq!(
-			target_state_for_direction(SnapState::TopHalf, SnapDirection::Left, work_area),
+			target_state_for_direction(
+				SnapState::TopHalf,
+				SnapDirection::Left,
+				work_area
+			),
 			TargetWindowState::Rect(layout.top_left)
 		);
 		assert_eq!(
@@ -539,7 +543,11 @@ mod tests {
 			TargetWindowState::Rect(layout.bottom_right)
 		);
 		assert_eq!(
-			target_state_for_direction(SnapState::TopLeft, SnapDirection::Left, work_area),
+			target_state_for_direction(
+				SnapState::TopLeft,
+				SnapDirection::Left,
+				work_area
+			),
 			TargetWindowState::Rect(layout.left_half)
 		);
 		assert_eq!(
@@ -628,19 +636,35 @@ mod tests {
 		let work_area = rect(0, 0, 100, 80);
 		let layout = SnapLayout::new(work_area);
 		assert_eq!(
-			target_state_for_direction(SnapState::Maximized, SnapDirection::Left, work_area),
+			target_state_for_direction(
+				SnapState::Maximized,
+				SnapDirection::Left,
+				work_area
+			),
 			TargetWindowState::Rect(layout.left_half)
 		);
 		assert_eq!(
-			target_state_for_direction(SnapState::Maximized, SnapDirection::Right, work_area),
+			target_state_for_direction(
+				SnapState::Maximized,
+				SnapDirection::Right,
+				work_area
+			),
 			TargetWindowState::Rect(layout.right_half)
 		);
 		assert_eq!(
-			target_state_for_direction(SnapState::Maximized, SnapDirection::Up, work_area),
+			target_state_for_direction(
+				SnapState::Maximized,
+				SnapDirection::Up,
+				work_area
+			),
 			TargetWindowState::Rect(layout.top_half)
 		);
 		assert_eq!(
-			target_state_for_direction(SnapState::Maximized, SnapDirection::Down, work_area),
+			target_state_for_direction(
+				SnapState::Maximized,
+				SnapDirection::Down,
+				work_area
+			),
 			TargetWindowState::Rect(layout.top_half)
 		);
 	}

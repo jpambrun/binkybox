@@ -1,3 +1,4 @@
+use std::panic::PanicHookInfo;
 use std::sync::OnceLock;
 
 #[cfg(windows)]
@@ -14,8 +15,41 @@ pub(crate) fn log_error(component: &str, message: &str) {
 	log_line(component, message);
 }
 
+pub(crate) fn install_panic_hook() {
+	static PANIC_HOOK_INSTALLED: OnceLock<()> = OnceLock::new();
+	if PANIC_HOOK_INSTALLED.set(()).is_err() {
+		return;
+	}
+	std::panic::set_hook(Box::new(|panic_info| {
+		log_panic(panic_info);
+	}));
+}
+
 pub(crate) fn log_info(component: &str, message: &str) {
 	log_line(component, message);
+}
+
+fn log_panic(panic_info: &PanicHookInfo<'_>) {
+	let location = panic_info
+		.location()
+		.map(|location| format!("{}:{}", location.file(), location.line()))
+		.unwrap_or_else(|| "unknown location".to_string());
+	let payload = if let Some(message) = panic_info.payload().downcast_ref::<&str>() {
+		*message
+	} else if let Some(message) = panic_info.payload().downcast_ref::<String>() {
+		message.as_str()
+	} else {
+		"non-string panic payload"
+	};
+	let current_thread = std::thread::current();
+	let thread_name = current_thread.name().unwrap_or("unnamed");
+	log_error(
+		"panic",
+		&format!(
+			"thread '{}' panicked at {}: {}",
+			thread_name, location, payload
+		),
+	);
 }
 
 fn log_line(component: &str, message: &str) {
