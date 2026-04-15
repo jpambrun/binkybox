@@ -7,9 +7,9 @@ use windows_sys::Win32::{
 	Foundation::{GetLastError, HINSTANCE, LPARAM, LRESULT, WPARAM},
 	UI::{
 		Input::KeyboardAndMouse::{
-			keybd_event, KEYEVENTF_KEYUP, VK_DOWN, VK_LCONTROL, VK_LEFT, VK_LMENU,
-			VK_LSHIFT, VK_LWIN, VK_OEM_3, VK_Q, VK_RCONTROL, VK_RETURN, VK_RIGHT,
-			VK_RMENU, VK_RSHIFT, VK_RWIN, VK_UP,
+			keybd_event, GetAsyncKeyState, KEYEVENTF_KEYUP, VK_DOWN, VK_LCONTROL,
+			VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_OEM_3, VK_Q, VK_RCONTROL,
+			VK_RETURN, VK_RIGHT, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_UP,
 		},
 		WindowsAndMessaging::{
 			CallNextHookEx, GetMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
@@ -151,6 +151,15 @@ unsafe extern "system" fn low_level_keyboard_proc(
 
 	if vk < 256 {
 		if let Ok(mut state) = KEYDOWN_STATE.lock() {
+			if state[vk as usize] {
+				if should_clear_stale_keydown_state(true, physical_key_is_down(vk)) {
+					log_info(
+						"keys/hook",
+						&format!("cleared stale keydown state for vk {}", vk),
+					);
+					state[vk as usize] = false;
+				}
+			}
 			if state[vk as usize] {
 				if is_win_vk(vk) {
 					return 1;
@@ -304,6 +313,17 @@ fn is_win_vk(vk: u32) -> bool {
 	vk == VK_LWIN as u32 || vk == VK_RWIN as u32
 }
 
+fn physical_key_is_down(vk: u32) -> bool {
+	unsafe { (GetAsyncKeyState(vk as i32) & i16::MIN) != 0 }
+}
+
+fn should_clear_stale_keydown_state(
+	tracked_as_down: bool,
+	physically_down: bool,
+) -> bool {
+	tracked_as_down && !physically_down
+}
+
 fn ensure_native_win_passthrough_started() {
 	if WIN_NATIVE_PASSTHROUGH.load(Ordering::Relaxed) {
 		return;
@@ -401,6 +421,13 @@ mod tests {
 		assert!(!should_replay_win_key(true, false, true));
 		assert!(!should_replay_win_key(false, true, true));
 		assert!(!should_replay_win_key(false, false, false));
+	}
+
+	#[test]
+	fn stale_keydown_state_is_cleared_when_key_is_no_longer_physically_down() {
+		assert!(should_clear_stale_keydown_state(true, false));
+		assert!(!should_clear_stale_keydown_state(true, true));
+		assert!(!should_clear_stale_keydown_state(false, false));
 	}
 
 	#[test]
