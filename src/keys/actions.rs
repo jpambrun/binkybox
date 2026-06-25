@@ -1,5 +1,4 @@
-use std::os::windows::process::CommandExt;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::{mpsc, OnceLock};
 use std::thread;
 
@@ -100,13 +99,13 @@ pub(crate) fn dispatch_action(action: Action) -> bool {
 }
 
 fn launch_wezterm(domain: &str) {
-	const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-	const DETACHED_PROCESS: u32 = 0x0000_0008;
 	if let Err(err) = Command::new("wezterm-gui.exe")
 		.arg("start")
 		.arg("--domain")
 		.arg(domain)
-		.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
+		.stdin(Stdio::null())
+		.stdout(Stdio::null())
+		.stderr(Stdio::null())
 		.spawn()
 	{
 		log_error(
